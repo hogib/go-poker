@@ -23,7 +23,7 @@ func (b *Board) AddCard(c Card) {
 func DealHand(d *Deck) (Hand, error) {
 	newHand := Hand{}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		card, err := d.Deal()
 		if err != nil {
 			return newHand, fmt.Errorf("not enough cards to deal hand: %w", err)
@@ -39,7 +39,7 @@ func DealFlop(d *Deck, b *Board) error {
 		return fmt.Errorf("not enough cards to burn for flop: %w", err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		card, err := d.Deal()
 		if err != nil {
 			return fmt.Errorf("not enough cards for flop: %w", err)
