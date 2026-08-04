@@ -1,12 +1,16 @@
 package deck
 
 type Player struct {
-	hand Hand
+	Hand Hand
 }
 
-func newPlayer(d *Deck) Player {
-	var player = Player{
-		hand: Hand{},
+func NewPlayer(d *Deck) (Player, error) {
+	startingHand, err := DealHand(d)
+	if err != nil {
+		return Player{}, err
 	}
 
+	return Player{
+		Hand: startingHand,
+	}, nil
 }
