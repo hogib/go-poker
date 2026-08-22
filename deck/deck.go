@@ -5,9 +5,37 @@ import (
 	"math/rand"
 )
 
+type Suit int
+type Rank int
+
+const (
+	Spades Suit = iota
+	Hearts
+	Diamonds
+	Clubs
+)
+
+const (
+	_     Rank = iota // 0
+	_                 // 1
+	Two               // 2
+	Three             // 3
+	Four              // 4
+	Five              // 5
+	Six               // 6
+	Seven             // 7
+	Eight             // 8
+	Nine              // 9
+	Ten               // 10
+	Jack              // 11
+	Queen             // 12
+	King              // 13
+	Ace               // 14
+)
+
 type Card struct {
-	rank string
-	suit string
+	rank Rank
+	suit Suit
 }
 
 type Deck struct {
@@ -15,20 +43,19 @@ type Deck struct {
 }
 
 func NewDeck() Deck {
-	deck := Deck{}
+	deck := Deck{
+		cards: make([]Card, 0, 52),
+	}
 
-	suits := []string{"Spades", "Hearts", "Diamonds", "Clubs"}
-	ranks := []string{"Ace", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Jack", "Queen", "King"}
-
-	for _, suit := range suits {
-		for _, rank := range ranks {
-			new_card := Card{
-				suit: suit,
-				rank: rank,
-			}
-			deck.cards = append(deck.cards, new_card)
+	for s := Spades; s <= Clubs; s++ {
+		for r := Two; r <= Ace; r++ {
+			deck.cards = append(deck.cards, Card{
+				suit: s,
+				rank: r,
+			})
 		}
 	}
+
 	return deck
 }
 
