@@ -117,3 +117,61 @@ func TestMoveButton(t *testing.T) {
 		t.Errorf("Expected button to wrap back to 0, got %d", g.ButtonIndex)
 	}
 }
+
+func TestMinRaiseInitialization(t *testing.T) {
+	g := NewGame(25, 50)
+	p1 := player.NewPlayer("Alice", 1000)
+	p2 := player.NewPlayer("Bob", 1000)
+	g.AddPlayer(&p1)
+	g.AddPlayer(&p2)
+
+	g.StartNewHand()
+
+	if g.MinRaise != 50 {
+		t.Errorf("Expected MinRaise to be initialized to the BB (50), got %d", g.MinRaise)
+	}
+}
+
+func TestExecuteBettingRound_AutoCall(t *testing.T) {
+	g := NewGame(10, 20)
+	p1 := player.NewPlayer("Alice", 100)   // Seat 0 (Button)
+	p2 := player.NewPlayer("Bob", 100)     // Seat 1 (Small Blind)
+	p3 := player.NewPlayer("Charlie", 100) // Seat 2 (Big Blind)
+
+	g.AddPlayer(&p1)
+	g.AddPlayer(&p2)
+	g.AddPlayer(&p3)
+
+	// Start the hand
+	g.StartNewHand()
+
+	// Initial State Check:
+	// Pot should be 30 (Bob's 10 + Charlie's 20)
+	// Alice owes 20 to call. Bob owes 10 to call. Charlie owes 0.
+
+	// Execute the pre-flop betting round
+	g.ExecuteBettingRound(0)
+
+	// Verify the loop exited properly and calculated the Calls
+
+	expectedPot := 60 // 20 from each of the 3 players
+	if g.Pot != expectedPot {
+		t.Errorf("Expected pot to be %d after everyone calls, got %d", expectedPot, g.Pot)
+	}
+
+	// Verify everyone's chips were deducted correctly
+	if p1.Chips != 80 {
+		t.Errorf("Expected Alice to have 80 chips, got %d", p1.Chips)
+	}
+	if p2.Chips != 80 {
+		t.Errorf("Expected Bob to have 80 chips, got %d", p2.Chips)
+	}
+	if p3.Chips != 80 {
+		t.Errorf("Expected Charlie to have 80 chips, got %d", p3.Chips)
+	}
+
+	// Verify the CurrentBet didn't artificially inflate
+	if g.CurrentBet != 20 {
+		t.Errorf("Expected CurrentBet to remain 20 (BB), got %d", g.CurrentBet)
+	}
+}
