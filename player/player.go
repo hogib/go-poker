@@ -13,24 +13,18 @@ type Player struct {
 	Folded     bool
 }
 
-func NewPlayer(d *deck.Deck, name string, startingChips int) (Player, error) {
-	startingHand, err := deck.DealHand(d)
-	if err != nil {
-		return Player{}, err
-	}
-
+func NewPlayer(name string, startingChips int) Player {
 	return Player{
 		Name:       name,
-		Hand:       startingHand,
 		Chips:      startingChips,
 		CurrentBet: 0,
 		Folded:     false,
-	}, nil
+	}
 }
 
-func (p *Player) Bet(amount int) error {
+func (p *Player) Bet(amount int) (int, error) {
 	if amount <= 0 {
-		return fmt.Errorf("bet amount must be greater than zero")
+		return 0, fmt.Errorf("bet amount must be greater than zero")
 	}
 
 	if amount > p.Chips {
@@ -39,7 +33,7 @@ func (p *Player) Bet(amount int) error {
 
 	p.Chips -= amount
 	p.CurrentBet += amount
-	return nil
+	return amount, nil
 }
 
 func (p *Player) Fold() {

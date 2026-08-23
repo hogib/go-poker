@@ -56,6 +56,8 @@ func NewDeck() Deck {
 		}
 	}
 
+	deck.Shuffle()
+
 	return deck
 }
 
