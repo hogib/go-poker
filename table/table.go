@@ -220,6 +220,11 @@ func (t *Table) Rebuy(sessionID string) bool {
 // positions -- from anywhere else. It returns false if the table does not
 // get to it before the deadline, which happens while a hand is in
 // progress and someone is on the clock.
+//
+// fn must not call Join, Leave or Rebuy. Those enqueue onto the same
+// channel fn is already running off, so a full queue would leave the Run
+// goroutine blocked sending to a channel only it can drain, taking the
+// whole table down with it.
 func (t *Table) do(fn func(), within time.Duration) bool {
 	done := make(chan struct{})
 
@@ -272,6 +277,13 @@ func (t *Table) Run(ctx context.Context) {
 
 		t.applySeatOps()
 
+		// Clear out busted players before counting. PlayHand does this
+		// too, but at its start, so leaving it to PlayHand means a table
+		// that has just lost a player tries to deal and reports "not
+		// enough players" to everyone still watching.
+		t.game.RemoveBustedPlayers()
+		t.reportBustouts()
+
 		if len(t.game.Players) < 2 {
 			t.broadcastInfo("Waiting for players...")
 			select {
@@ -285,8 +297,6 @@ func (t *Table) Run(ctx context.Context) {
 		if _, err := t.game.PlayHand(); err != nil {
 			t.broadcastInfo(fmt.Sprintf("Hand could not be played: %v", err))
 		}
-
-		t.reportBustouts()
 
 		select {
 		case <-ctx.Done():
@@ -354,11 +364,17 @@ func (t *Table) fundSeat(s *Session) {
 	s.Player.Chips = t.cfg.BuyIn
 }
 
-// reportBustouts tells anyone the engine dropped for having no chips that
-// they can buy in again.
+// reportBustouts tells anyone who has run out of chips that they can buy
+// in again.
+//
+// Seat position is deliberately not part of the test. A player who busts
+// in this hand is still in g.Players when this runs -- RemoveBustedPlayers
+// happens at the start of the next PlayHand, not the end of this one --
+// and if they were the second-to-last player there may not be a next hand
+// at all. Keying off the empty stack alone tells them straight away.
 func (t *Table) reportBustouts() {
 	for _, s := range t.snapshot() {
-		if s.Player.Chips == 0 && t.game.SeatOf(s.Player) == game.SpectatorSeat {
+		if s.Player.Chips == 0 {
 			s.send(InfoMsg{Text: "You are out of chips. Press r to buy in again."})
 		}
 	}

@@ -2,6 +2,7 @@ package table
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -431,4 +432,105 @@ func TestFundSeat(t *testing.T) {
 			t.Errorf("a player with chips should keep exactly them, got %d", s.Player.Chips)
 		}
 	})
+}
+
+// A player who busts is told they can buy in again straight away. The
+// message must not depend on their seat being gone: RemoveBustedPlayers
+// runs at the start of the next hand, and if they were the second-to-last
+// player there may be no next hand at all.
+//
+// Like TestFundSeat, this drives the table directly rather than through
+// do(), which is safe only because New() starts no Run goroutine. Never
+// call these on a live table.
+func TestReportBustoutsTellsASeatedButBrokePlayer(t *testing.T) {
+	tbl := New(testConfig())
+
+	rec := &recorder{}
+	broke := newSession("broke", "Broke", 0, rec.notify)
+	broke.Player.Chips = 0
+
+	healthy := newSession("healthy", "Healthy", 0, (&recorder{}).notify)
+	healthy.Player.Chips = 500
+
+	tbl.mu.Lock()
+	tbl.sessions["broke"] = broke
+	tbl.sessions["healthy"] = healthy
+	tbl.mu.Unlock()
+
+	// Both are still seated, which is the state right after the hand that
+	// busted one of them.
+	tbl.game.AddPlayer(broke.Player)
+	tbl.game.AddPlayer(healthy.Player)
+
+	tbl.reportBustouts()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		rec.mu.Lock()
+		infos := append([]string(nil), rec.infos...)
+		rec.mu.Unlock()
+
+		for _, line := range infos {
+			if strings.Contains(line, "out of chips") {
+				return
+			}
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("a broke player still in their seat was never told to buy in: %v", infos)
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
+// Busting down to one player is a normal end to a session, not an error
+// the remaining players should be shown.
+func TestBustingDownToOnePlayerReportsNoError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := testConfig()
+	cfg.BuyIn = 40 // one all-in decides it
+	cfg.HandDelay = time.Millisecond
+	tbl := New(cfg)
+	go tbl.Run(ctx)
+
+	alice, bob := &recorder{}, &recorder{}
+	tbl.Join("key-alice", "Alice", alice.notify)
+	tbl.Join("key-bob", "Bob", bob.notify)
+
+	go autoPlay(ctx, tbl, "key-alice", alice)
+	go autoPlay(ctx, tbl, "key-bob", bob)
+
+	// Play until someone is knocked out and the table settles.
+	deadline := time.After(15 * time.Second)
+	for {
+		var seated int
+		if tbl.do(func() { seated = len(tbl.game.Players) }, 5*time.Second) && seated < 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("nobody was knocked out")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Give the loop a few turns to misbehave if it is going to.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	for name, r := range map[string]*recorder{"Alice": alice, "Bob": bob} {
+		r.mu.Lock()
+		infos := append([]string(nil), r.infos...)
+		r.mu.Unlock()
+
+		for _, line := range infos {
+			if strings.Contains(line, "could not be played") {
+				t.Errorf("%s was shown an error for a table that simply ran out of players: %q",
+					name, line)
+			}
+		}
+	}
 }

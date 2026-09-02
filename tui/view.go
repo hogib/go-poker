@@ -163,7 +163,9 @@ func (m Model) keyHints() string {
 	if !m.onClock {
 		// Rebuying is only on the table for someone who has been knocked
 		// out, so do not advertise it to a player who still has chips.
-		if m.view.Seat == game.SpectatorSeat {
+		// A busted player is still in their seat until the next hand
+		// starts, so an empty stack counts as well as being off the table.
+		if m.view.Seat == game.SpectatorSeat || m.view.Seats[m.view.Seat].Chips == 0 {
 			return "r: buy in   q: quit"
 		}
 		return "waiting for the table   q: quit"

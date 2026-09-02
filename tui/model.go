@@ -127,7 +127,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Doubles as buy-in when this player has been knocked out.
 		if !m.onClock {
 			if m.table.Rebuy(m.session.ID) {
-				m.status = "Buying in for the next hand."
+				m.status = "Sitting in for the next hand."
 			}
 			return m, nil
 		}
