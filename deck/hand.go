@@ -2,6 +2,7 @@ package deck
 
 import (
 	"fmt"
+	"strings"
 )
 
 type Hand struct {
@@ -62,4 +63,20 @@ func DealTurnOrRiver(d *Deck, b *Board) error {
 	b.AddCard(card)
 
 	return nil
+}
+
+func (h Hand) String() string {
+	return joinCards(h.Cards)
+}
+
+func (b Board) String() string {
+	return joinCards(b.Cards)
+}
+
+func joinCards(cards []Card) string {
+	parts := make([]string, 0, len(cards))
+	for _, c := range cards {
+		parts = append(parts, c.String())
+	}
+	return strings.Join(parts, " ")
 }

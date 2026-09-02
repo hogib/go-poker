@@ -37,6 +37,17 @@ func buildScore(multiplier int, ranks []int) int {
 	return score
 }
 
+// rankSliceDesc returns this hand's ranks sorted high to low. It copies
+// first: evaluation must never reorder the caller's cards.
+func rankSliceDesc(h *Hand) []int {
+	ranks := make([]int, 0, len(h.Cards))
+	for _, card := range h.Cards {
+		ranks = append(ranks, int(card.rank))
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(ranks)))
+	return ranks
+}
+
 func isFlush(h *Hand) ([]int, bool) {
 	if len(h.Cards) < 5 {
 		return nil, false
@@ -49,19 +60,7 @@ func isFlush(h *Hand) ([]int, bool) {
 		}
 	}
 
-	sort.Slice(h.Cards, func(i, j int) bool {
-		return h.Cards[i].rank < h.Cards[j].rank
-	})
-
-	ranks := []int{
-		int(h.Cards[4].rank),
-		int(h.Cards[3].rank),
-		int(h.Cards[2].rank),
-		int(h.Cards[1].rank),
-		int(h.Cards[0].rank),
-	}
-
-	return ranks, true
+	return rankSliceDesc(h), true
 }
 
 func isStraight(h *Hand) ([]int, bool) {
@@ -69,30 +68,19 @@ func isStraight(h *Hand) ([]int, bool) {
 		return nil, false
 	}
 
-	sort.Slice(h.Cards, func(i, j int) bool {
-		return h.Cards[i].rank < h.Cards[j].rank
-	})
-	// wheel (ace low straight)
-	if h.Cards[0].rank == Two && h.Cards[1].rank == Three &&
-		h.Cards[2].rank == Four && h.Cards[3].rank == Five &&
-		h.Cards[4].rank == Ace {
+	ranks := rankSliceDesc(h)
+
+	// wheel (ace low straight): A-5-4-3-2, where the ace plays low
+	if ranks[0] == int(Ace) && ranks[1] == int(Five) && ranks[2] == int(Four) &&
+		ranks[3] == int(Three) && ranks[4] == int(Two) {
 
 		return []int{5, 4, 3, 2, 1}, true
 	}
 
-	for i := 1; i < len(h.Cards); i++ {
-		if h.Cards[i].rank != h.Cards[i-1].rank+1 {
+	for i := 1; i < len(ranks); i++ {
+		if ranks[i] != ranks[i-1]-1 {
 			return nil, false
 		}
-
-	}
-
-	ranks := []int{
-		int(h.Cards[4].rank),
-		int(h.Cards[3].rank),
-		int(h.Cards[2].rank),
-		int(h.Cards[1].rank),
-		int(h.Cards[0].rank),
 	}
 
 	return ranks, true
@@ -134,7 +122,7 @@ func isPair(h *Hand) ([]int, bool) {
 		}
 	}
 
-	if pairRank > 0 {
+	if pairRank > 0 && len(kickers) >= 3 {
 		sort.Slice(kickers, func(i, j int) bool {
 			return kickers[i] > kickers[j]
 		})
@@ -223,15 +211,7 @@ func isStraightFlush(h *Hand) ([]int, bool) {
 }
 
 func highCard(h *Hand) []int {
-	highest := 0
-
-	sort.Slice(h.Cards, func(i, j int) bool {
-		return h.Cards[i].rank < h.Cards[j].rank
-	})
-
-	highest = int(h.Cards[4].rank)
-
-	return []int{highest, int(h.Cards[3].rank), int(h.Cards[2].rank), int(h.Cards[1].rank), int(h.Cards[0].rank)}
+	return rankSliceDesc(h)
 }
 
 func EvaluateHand(h *Hand) int {
@@ -263,32 +243,39 @@ func EvaluateHand(h *Hand) int {
 	return buildScore(0, highCard(h))
 }
 
+// GetBestHand returns the highest-scoring five-card hand that can be made
+// from the player's hole cards plus the board. Fewer than five cards
+// available means there is nothing to score, so an empty hand comes back.
 func GetBestHand(h *Hand, b *Board) Hand {
 	var allCards []Card
 	allCards = append(allCards, h.Cards...)
 	allCards = append(allCards, b.Cards...)
 
+	if len(allCards) < 5 {
+		return Hand{}
+	}
+
 	var bestHand Hand
-	var highestScore int
+	highestScore := -1
 
-	for i := 0; i < len(allCards)-1; i++ {
-		for j := i + 1; j < len(allCards); j++ {
-
-			combo := Hand{Cards: make([]Card, 0, 5)}
-			for k, card := range allCards {
-				if k != i && k != j {
-					combo.AddCard(card)
-				}
-			}
-
-			score := EvaluateHand(&combo)
-
-			if score > highestScore {
+	combo := make([]Card, 5)
+	var walk func(start, filled int)
+	walk = func(start, filled int) {
+		if filled == 5 {
+			candidate := Hand{Cards: append([]Card(nil), combo...)}
+			if score := EvaluateHand(&candidate); score > highestScore {
 				highestScore = score
-				bestHand = combo
+				bestHand = candidate
 			}
+			return
+		}
+		// Stop early once too few cards remain to fill the hand.
+		for i := start; i <= len(allCards)-(5-filled); i++ {
+			combo[filled] = allCards[i]
+			walk(i+1, filled+1)
 		}
 	}
+	walk(0, 0)
 
 	return bestHand
 }

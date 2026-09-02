@@ -76,3 +76,55 @@ func (d *Deck) Deal() (Card, error) {
 
 	return top_card, nil
 }
+
+func (s Suit) String() string {
+	switch s {
+	case Spades:
+		return "♠"
+	case Hearts:
+		return "♥"
+	case Diamonds:
+		return "♦"
+	case Clubs:
+		return "♣"
+	}
+	return "?"
+}
+
+func (r Rank) String() string {
+	switch r {
+	case Ten:
+		return "T"
+	case Jack:
+		return "J"
+	case Queen:
+		return "Q"
+	case King:
+		return "K"
+	case Ace:
+		return "A"
+	}
+	if r < Two || r > Ace {
+		return "?"
+	}
+	return string(rune('0' + int(r)))
+}
+
+func (c Card) String() string {
+	return c.rank.String() + c.suit.String()
+}
+
+// Rank exposes the card's rank to callers outside this package.
+func (c Card) Rank() Rank { return c.rank }
+
+// Suit exposes the card's suit to callers outside this package.
+func (c Card) Suit() Suit { return c.suit }
+
+// NewCard builds a card, mainly so tests and fixtures outside this
+// package can construct known holdings.
+func NewCard(r Rank, s Suit) Card {
+	return Card{rank: r, suit: s}
+}
+
+// Remaining reports how many cards are left undealt.
+func (d *Deck) Remaining() int { return len(d.cards) }
