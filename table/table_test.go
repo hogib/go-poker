@@ -18,6 +18,7 @@ type recorder struct {
 	turns  []game.PlayerView
 	infos  []string
 	result *game.HandResult
+	lobby  *LobbyMsg
 }
 
 func (r *recorder) notify(msg any) {
@@ -34,6 +35,9 @@ func (r *recorder) notify(msg any) {
 	case ResultMsg:
 		res := m.Result
 		r.result = &res
+	case LobbyMsg:
+		lobby := m
+		r.lobby = &lobby
 	}
 }
 
@@ -67,6 +71,39 @@ func (r *recorder) lastState() (game.PlayerView, bool) {
 		return game.PlayerView{}, false
 	}
 	return r.states[len(r.states)-1], true
+}
+
+func (r *recorder) lastLobby() (LobbyMsg, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.lobby == nil {
+		return LobbyMsg{}, false
+	}
+	return *r.lobby, true
+}
+
+// joinAndSit is the two-step a real client makes: connect to the lobby,
+// then ask for a seat.
+func joinAndSit(t *Table, id, name string, r *recorder) *Session {
+	s := t.Join(id, name, r.notify)
+	t.Sit(id)
+	return s
+}
+
+// waitUntil polls cond, which keeps these tests free of sleeps tuned to
+// the table's internal timing.
+func waitUntil(t *testing.T, what string, within time.Duration, cond func() bool) {
+	t.Helper()
+
+	deadline := time.After(within)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
 }
 
 func testConfig() Config {
@@ -117,8 +154,8 @@ func TestTablePlaysAHandForTwoSessions(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	tbl.Join("key-alice", "Alice", alice.notify)
-	tbl.Join("key-bob", "Bob", bob.notify)
+	joinAndSit(tbl, "key-alice", "Alice", alice)
+	joinAndSit(tbl, "key-bob", "Bob", bob)
 
 	go autoPlay(ctx, tbl, "key-alice", alice)
 	go autoPlay(ctx, tbl, "key-bob", bob)
@@ -158,8 +195,8 @@ func TestTableSnapshotsStayRedacted(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	sa := tbl.Join("key-alice", "Alice", alice.notify)
-	sb := tbl.Join("key-bob", "Bob", bob.notify)
+	sa := joinAndSit(tbl, "key-alice", "Alice", alice)
+	sb := joinAndSit(tbl, "key-bob", "Bob", bob)
 
 	go autoPlay(ctx, tbl, "key-alice", alice)
 	go autoPlay(ctx, tbl, "key-bob", bob)
@@ -219,8 +256,8 @@ func TestDisconnectDoesNotStallTheTable(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, ghost := &recorder{}, &recorder{}
-	tbl.Join("key-alice", "Alice", alice.notify)
-	ghostSession := tbl.Join("key-ghost", "Ghost", ghost.notify)
+	joinAndSit(tbl, "key-alice", "Alice", alice)
+	ghostSession := joinAndSit(tbl, "key-ghost", "Ghost", ghost)
 
 	go autoPlay(ctx, tbl, "key-alice", alice)
 
@@ -257,8 +294,8 @@ func TestReconnectKeepsTheSeat(t *testing.T) {
 	go tbl.Run(ctx)
 
 	first := &recorder{}
-	original := tbl.Join("key-alice", "Alice", first.notify)
-	tbl.Join("key-bob", "Bob", (&recorder{}).notify)
+	original := joinAndSit(tbl, "key-alice", "Alice", first)
+	joinAndSit(tbl, "key-bob", "Bob", &recorder{})
 
 	second := &recorder{}
 	again := tbl.Join("key-alice", "Alice", second.notify)
@@ -291,8 +328,8 @@ func TestActIgnoresPlayersNotOnTheClock(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	tbl.Join("key-alice", "Alice", alice.notify)
-	tbl.Join("key-bob", "Bob", bob.notify)
+	joinAndSit(tbl, "key-alice", "Alice", alice)
+	joinAndSit(tbl, "key-bob", "Bob", bob)
 
 	if tbl.Act("key-nobody", game.Decision{Action: game.Fold}) {
 		t.Error("a stranger's decision should be rejected")
@@ -340,8 +377,8 @@ func TestReconnectAfterLeaveKeepsChips(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	aliceSession := tbl.Join("key-alice", "Alice", alice.notify)
-	bobSession := tbl.Join("key-bob", "Bob", bob.notify)
+	aliceSession := joinAndSit(tbl, "key-alice", "Alice", alice)
+	bobSession := joinAndSit(tbl, "key-bob", "Bob", bob)
 
 	playCtx, stopPlay := context.WithCancel(ctx)
 	go autoPlay(playCtx, tbl, "key-alice", alice)
@@ -373,7 +410,7 @@ func TestReconnectAfterLeaveKeepsChips(t *testing.T) {
 		t.Fatalf("Bob's stack was not banked when he stood: %d", banked)
 	}
 
-	returning := tbl.Join("key-bob", "Bob", (&recorder{}).notify)
+	returning := joinAndSit(tbl, "key-bob", "Bob", &recorder{})
 	if returning == bobSession {
 		t.Fatal("a full disconnect should produce a new session")
 	}
@@ -497,8 +534,8 @@ func TestBustingDownToOnePlayerReportsNoError(t *testing.T) {
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	tbl.Join("key-alice", "Alice", alice.notify)
-	tbl.Join("key-bob", "Bob", bob.notify)
+	joinAndSit(tbl, "key-alice", "Alice", alice)
+	joinAndSit(tbl, "key-bob", "Bob", bob)
 
 	go autoPlay(ctx, tbl, "key-alice", alice)
 	go autoPlay(ctx, tbl, "key-bob", bob)

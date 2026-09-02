@@ -138,3 +138,14 @@ func (s *Session) deliver(msg any) {
 		notify(msg)
 	}
 }
+
+// LobbyMsg is what the menu needs: the house rules, and who is at the
+// table as against watching from the rail.
+type LobbyMsg struct {
+	Rules    Config
+	Seated   int
+	Watching int
+
+	YouAreSeated bool
+	YourChips    int
+}

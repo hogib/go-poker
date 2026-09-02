@@ -61,6 +61,11 @@ type Table struct {
 	sessions map[string]*Session
 	lastView map[string]game.PlayerView
 
+	// lastPublic is the most recent spectator snapshot. It lets a session
+	// that has only just connected draw something immediately, without
+	// calling ViewFor from its own goroutine.
+	lastPublic game.PlayerView
+
 	// banked holds the chips of players who have disconnected, keyed by
 	// their SSH fingerprint. Without it a player who drops and comes
 	// back is a brand new seat with a fresh buy-in, which is both a
@@ -124,21 +129,26 @@ func New(cfg Config) *Table {
 
 func (t *Table) Config() Config { return t.cfg }
 
-// Join connects a player. Reconnecting with the same ID reattaches to the
-// existing seat rather than creating a new one, so a dropped connection
-// costs a player their view and not their chips -- and a turn that is
-// already in flight survives the reconnect.
+// Join connects a player as a spectator. Taking a seat is a separate
+// step, so a new arrival lands in the lobby rather than being dealt into
+// whatever is already going on.
+//
+// Reconnecting with the same ID reattaches to the existing session rather
+// than creating a new one, so a dropped connection costs a player their
+// view and not their chips -- and a turn already in flight survives it.
 func (t *Table) Join(id, name string, notify func(any)) *Session {
 	t.mu.Lock()
 
 	if existing, ok := t.sessions[id]; ok {
 		existing.attach(notify)
 		view, hasView := t.lastView[id]
+		lobby := t.lobbyLocked(existing)
 		t.mu.Unlock()
 
 		if hasView {
 			existing.send(StateMsg{View: view})
 		}
+		existing.send(lobby)
 		return existing
 	}
 
@@ -147,12 +157,95 @@ func (t *Table) Join(id, name string, notify func(any)) *Session {
 	// count on the table.
 	s := newSession(id, name, 0, notify)
 	t.sessions[id] = s
+	public := t.lastPublic
+	lobby := t.lobbyLocked(s)
 	t.mu.Unlock()
 
+	if len(public.Seats) > 0 {
+		s.send(StateMsg{View: public})
+	}
+	s.send(lobby)
+
+	return s
+}
+
+// Sit asks for a seat at the next hand. A player who is already seated,
+// or who has no session, is ignored.
+func (t *Table) Sit(sessionID string) bool {
+	t.mu.Lock()
+	s, ok := t.sessions[sessionID]
+	t.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	// Whether they need chips, and whether they already have a seat, is
+	// decided by the Run goroutine -- the only one allowed to look.
 	t.seatOps <- seatOp{kind: opSit, session: s}
 	t.signal()
 
-	return s
+	return true
+}
+
+// Stand gives up a seat without disconnecting: the player drops back to
+// the lobby and keeps watching. It takes effect between hands, so chips
+// already in the pot stay in play.
+func (t *Table) Stand(sessionID string) bool {
+	t.mu.Lock()
+	s, ok := t.sessions[sessionID]
+	t.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	t.seatOps <- seatOp{kind: opStand, session: s}
+	t.signal()
+
+	return true
+}
+
+// Rebuy is Sit under the name a busted player would look for. The stack
+// is topped up when the seat is granted.
+func (t *Table) Rebuy(sessionID string) bool { return t.Sit(sessionID) }
+
+// lobbyLocked builds the menu's view of the table. The caller holds t.mu.
+func (t *Table) lobbyLocked(s *Session) LobbyMsg {
+	msg := LobbyMsg{
+		Rules:    t.cfg,
+		Watching: len(t.sessions),
+		Seated:   len(t.lastPublic.Seats),
+	}
+
+	if s != nil {
+		if view, ok := t.lastView[s.ID]; ok && view.Seat != game.SpectatorSeat {
+			msg.YouAreSeated = true
+			msg.YourChips = view.Seats[view.Seat].Chips
+		}
+	}
+
+	// Watchers are everyone connected who is not in a seat.
+	if msg.Watching -= msg.Seated; msg.Watching < 0 {
+		msg.Watching = 0
+	}
+
+	return msg
+}
+
+func (t *Table) broadcastLobby() {
+	t.mu.Lock()
+	sessions := make([]*Session, 0, len(t.sessions))
+	msgs := make([]LobbyMsg, 0, len(t.sessions))
+	for _, s := range t.sessions {
+		sessions = append(sessions, s)
+		msgs = append(msgs, t.lobbyLocked(s))
+	}
+	t.mu.Unlock()
+
+	for i, s := range sessions {
+		s.send(msgs[i])
+	}
 }
 
 // Leave disconnects a player. If a hand is in progress their seat stays
@@ -194,25 +287,6 @@ func (t *Table) Act(sessionID string, d game.Decision) bool {
 		// A decision is already in flight for this turn.
 		return false
 	}
-}
-
-// Rebuy puts a busted player back in for another buy-in. They are seated
-// again before the next hand.
-func (t *Table) Rebuy(sessionID string) bool {
-	t.mu.Lock()
-	s, ok := t.sessions[sessionID]
-	t.mu.Unlock()
-
-	if !ok {
-		return false
-	}
-
-	// Whether the player actually needs chips is decided by the Run
-	// goroutine, which is the only one allowed to read their stack.
-	t.seatOps <- seatOp{kind: opSit, session: s}
-	t.signal()
-
-	return true
 }
 
 // do runs fn on the Run goroutine and waits for it. It is the only safe
@@ -309,6 +383,15 @@ func (t *Table) Run(ctx context.Context) {
 // applySeatOps folds queued sits and stands into the game between hands,
 // which is also when poker says a player may join or leave.
 func (t *Table) applySeatOps() {
+	changed := false
+	defer func() {
+		if changed {
+			// The seat and watcher counts on everyone's menu just moved.
+			t.publishSeats()
+			t.broadcastLobby()
+		}
+	}()
+
 	for {
 		select {
 		case op := <-t.seatOps:
@@ -325,22 +408,46 @@ func (t *Table) applySeatOps() {
 				}
 				t.broadcastInfo(fmt.Sprintf("%s sits down with %d.",
 					op.session.Name, op.session.Player.Chips))
+				changed = true
 
 			case opRun:
 				op.fn()
 
 			case opStand:
 				// Bank the stack before the seat goes, so a player who
-				// reconnects gets their own chips back rather than a
+				// sits back down gets their own chips rather than a
 				// fresh buy-in.
 				t.banked[op.session.ID] = op.session.Player.Chips
 				if t.game.RemovePlayer(op.session.Player) {
 					t.broadcastInfo(fmt.Sprintf("%s leaves the table.", op.session.Name))
+					changed = true
 				}
 			}
 		default:
 			return
 		}
+	}
+}
+
+// publishSeats refreshes the cached public snapshot after the seating has
+// changed but before any hand has been dealt, so the lobby's counts are
+// right the moment someone sits down.
+func (t *Table) publishSeats() {
+	public := t.game.ViewFor(game.SpectatorSeat)
+
+	t.mu.Lock()
+	t.lastPublic = public
+	t.mu.Unlock()
+
+	for _, s := range t.snapshot() {
+		seat := t.game.SeatOf(s.Player)
+		view := t.game.ViewFor(seat)
+
+		t.mu.Lock()
+		t.lastView[s.ID] = view
+		t.mu.Unlock()
+
+		s.send(StateMsg{View: view})
 	}
 }
 
@@ -384,6 +491,12 @@ func (t *Table) reportBustouts() {
 // only place ViewFor may be called, and pushes each session its own
 // redacted snapshot.
 func (t *Table) TableChanged(g *game.Game) {
+	public := g.ViewFor(game.SpectatorSeat)
+
+	t.mu.Lock()
+	t.lastPublic = public
+	t.mu.Unlock()
+
 	for _, s := range t.snapshot() {
 		seat := g.SeatOf(s.Player)
 		view := g.ViewFor(seat)
