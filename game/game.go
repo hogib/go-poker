@@ -37,6 +37,10 @@ type Game struct {
 	SmallBlind int
 	BigBlind   int
 
+	// ButtonIndex is where the dealer button sits in Players, or
+	// SpectatorSeat when the button is dead -- parked on a seat whose
+	// occupant has left. It is derived from the seating ring; set it with
+	// SetButton rather than assigning to it.
 	ButtonIndex int
 	Street      Street
 
@@ -54,6 +58,26 @@ type Game struct {
 	// limit, which is fine for bots and tests but not for a table with a
 	// human who can close their laptop mid-hand.
 	TurnTimeout time.Duration
+
+	// order is the seating ring. A nil entry is a seat someone has left,
+	// held open until the button has passed over it.
+	//
+	// Compacting Players on every departure is what makes a naive button
+	// unfair: the seats renumber underneath it, so a player can end up on
+	// the button twice running, or post the big blind twice, or skip it.
+	// Keeping the vacated seat in the ring for one orbit is the dead
+	// button rule, and it costs one slice of bookkeeping.
+	order []*player.Player
+
+	// buttonPos, sbPos and bbPos index order and are three consecutive
+	// seats. Any of them may land on a vacated seat: a dead button, or a
+	// dead small blind that simply is not posted.
+	buttonPos int
+	sbPos     int
+	bbPos     int
+
+	deadSmallBlind bool
+	positioned     bool
 
 	// Watch, if set, is notified whenever the table state changes so a UI
 	// can redraw. It is called synchronously from whichever goroutine is
@@ -92,6 +116,7 @@ func NewGame(sb, bb int) Game {
 		BigBlind:    bb,
 		ButtonIndex: 0,
 		ActingSeat:  SpectatorSeat,
+		order:       make([]*player.Player, 0, 9),
 	}
 }
 
@@ -108,41 +133,20 @@ func (g *Game) AddPlayerWithSource(p *player.Player, s ActionSource) error {
 
 	g.Players = append(g.Players, p)
 	g.Sources = append(g.Sources, s)
+	g.order = append(g.order, p)
 	return nil
 }
 
 // RemoveBustedPlayers drops anyone with no chips left between hands.
-//
-// The button follows the nearest surviving seat at or before its old
-// position, so when the button player themselves busts the button steps
-// back one seat and PlayHand's MoveButton then advances it. The dealer
-// button can therefore rest on the same seat for two hands after a bust-
-// out. That is a deliberate simplification; a full dead-button rule is
-// phase 2 work.
+// Their seat stays in the ring as a vacated slot so the blinds keep
+// advancing by one seat per hand.
 func (g *Game) RemoveBustedPlayers() {
-	survivors := make([]*player.Player, 0, len(g.Players))
-	sources := make([]ActionSource, 0, len(g.Sources))
-	newButton := 0
-
-	for i, p := range g.Players {
-		if p.Chips <= 0 {
-			continue
+	for i := len(g.Players) - 1; i >= 0; i-- {
+		if g.Players[i].Chips <= 0 {
+			g.removeSeat(i)
 		}
-		if i <= g.ButtonIndex {
-			newButton = len(survivors)
-		}
-		survivors = append(survivors, p)
-		sources = append(sources, g.Sources[i])
 	}
-
-	g.Players = survivors
-	g.Sources = sources
-
-	if len(g.Players) == 0 {
-		g.ButtonIndex = 0
-		return
-	}
-	g.ButtonIndex = newButton % len(g.Players)
+	g.syncButtonIndex()
 }
 
 // RemovePlayer drops one seat from the table. Callers hold a
@@ -153,17 +157,165 @@ func (g *Game) RemovePlayer(target *player.Player) bool {
 		if p != target {
 			continue
 		}
-		g.Players = append(g.Players[:i], g.Players[i+1:]...)
-		g.Sources = append(g.Sources[:i], g.Sources[i+1:]...)
-
-		if len(g.Players) == 0 {
-			g.ButtonIndex = 0
-		} else if g.ButtonIndex >= len(g.Players) {
-			g.ButtonIndex = 0
-		}
+		g.removeSeat(i)
+		g.syncButtonIndex()
 		return true
 	}
 	return false
+}
+
+// removeSeat takes a player out of Players and vacates their slot in the
+// ring, leaving the ring's length and every position index untouched.
+func (g *Game) removeSeat(i int) {
+	target := g.Players[i]
+
+	g.Players = append(g.Players[:i], g.Players[i+1:]...)
+	g.Sources = append(g.Sources[:i], g.Sources[i+1:]...)
+
+	for pos, p := range g.order {
+		if p == target {
+			g.order[pos] = nil
+			break
+		}
+	}
+}
+
+// dropSeat removes a vacated slot from the ring entirely, once it has
+// served its orbit, sliding the position indices down to match.
+func (g *Game) dropSeat(pos int) {
+	g.order = append(g.order[:pos], g.order[pos+1:]...)
+
+	for _, idx := range []*int{&g.buttonPos, &g.sbPos, &g.bbPos} {
+		if *idx > pos {
+			*idx--
+		}
+	}
+}
+
+// occupied counts the seats in the ring that still have a player in them.
+func (g *Game) occupied() int {
+	n := 0
+	for _, p := range g.order {
+		if p != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// nextOccupied walks forward from pos to the next seat with a player in
+// it, or returns pos when the ring is empty.
+func (g *Game) nextOccupied(pos int) int {
+	n := len(g.order)
+	for i := 1; i <= n; i++ {
+		candidate := ((pos+i)%n + n) % n
+		if g.order[candidate] != nil {
+			return candidate
+		}
+	}
+	return pos
+}
+
+// SetButton parks the button on a seat in Players and derives the blinds
+// from it. Use it to arrange a table; the button moves on its own after
+// that.
+func (g *Game) SetButton(seat int) {
+	if seat < 0 || seat >= len(g.Players) {
+		return
+	}
+
+	for pos, p := range g.order {
+		if p == g.Players[seat] {
+			g.buttonPos = pos
+			if g.occupied() <= 2 {
+				// Heads-up the button posts the small blind, so the big
+				// blind is the very next seat, not the one after that.
+				g.bbPos = g.nextOccupied(pos)
+			} else {
+				g.bbPos = g.nextOccupied(g.nextOccupied(pos))
+			}
+			g.derivePositions()
+			g.positioned = true
+			return
+		}
+	}
+}
+
+// derivePositions fills the small blind and button from the big blind,
+// which is the position the dead button rule actually pins down: the big
+// blind advances exactly one occupied seat per hand, and everything else
+// is measured back from it.
+func (g *Game) derivePositions() {
+	n := len(g.order)
+	if n == 0 {
+		return
+	}
+
+	g.bbPos = ((g.bbPos % n) + n) % n
+
+	// The big blind is the one position that can never be dead: somebody
+	// has to have a live hand for there to be a hand at all. It can land
+	// on a vacated seat between hands, when its occupant busts after the
+	// button has already moved, and passes to the next live seat.
+	if g.order[g.bbPos] == nil {
+		g.bbPos = g.nextOccupied(g.bbPos)
+	}
+
+	if g.occupied() <= 2 {
+		// Heads-up the button is the small blind, and there is no third
+		// seat for a dead button to sit on.
+		other := g.nextOccupied(g.bbPos)
+		g.sbPos, g.buttonPos = other, other
+		g.deadSmallBlind = false
+		g.syncButtonIndex()
+		return
+	}
+
+	// Counted back through the ring, not through Players: walking over a
+	// vacated seat rather than skipping it is what keeps every remaining
+	// player advancing by exactly one position.
+	g.sbPos = ((g.bbPos-1)%n + n) % n
+	g.buttonPos = ((g.bbPos-2)%n + n) % n
+	g.deadSmallBlind = g.order[g.sbPos] == nil
+
+	g.syncButtonIndex()
+}
+
+func (g *Game) syncButtonIndex() {
+	if g.buttonPos < 0 || g.buttonPos >= len(g.order) || g.order[g.buttonPos] == nil {
+		g.ButtonIndex = SpectatorSeat
+		return
+	}
+	g.ButtonIndex = g.SeatOf(g.order[g.buttonPos])
+}
+
+// ensurePositioned puts the blinds somewhere sensible the first time a
+// hand is dealt.
+func (g *Game) ensurePositioned() {
+	if g.positioned || len(g.Players) == 0 {
+		return
+	}
+	g.SetButton(0)
+}
+
+// clockwiseFromButton lists seats in Players starting with the one left of
+// the button. It reads the ring rather than Players so a dead button still
+// has a well-defined place to count from.
+func (g *Game) clockwiseFromButton() []int {
+	n := len(g.order)
+	seats := make([]int, 0, len(g.Players))
+
+	for i := 1; i <= n; i++ {
+		p := g.order[((g.buttonPos+i)%n+n)%n]
+		if p == nil {
+			continue
+		}
+		if seat := g.SeatOf(p); seat != SpectatorSeat {
+			seats = append(seats, seat)
+		}
+	}
+
+	return seats
 }
 
 // SeatOf reports where a player is sitting, or SpectatorSeat if they are
@@ -177,23 +329,40 @@ func (g *Game) SeatOf(target *player.Player) int {
 	return SpectatorSeat
 }
 
+// getBlindIndices returns the seats posting the blinds. The small blind
+// is SpectatorSeat when it is dead: the seat that owes it has been
+// vacated, so nobody posts it this hand.
 func (g *Game) getBlindIndices() (int, int) {
-	numPlayers := len(g.Players)
+	g.ensurePositioned()
 
-	if numPlayers == 2 {
-		return g.ButtonIndex, (g.ButtonIndex + 1) % numPlayers
+	if len(g.order) == 0 {
+		return SpectatorSeat, SpectatorSeat
 	}
 
-	sbIndex := (g.ButtonIndex + 1) % numPlayers
-	bbIndex := (g.ButtonIndex + 2) % numPlayers
+	sb := SpectatorSeat
+	if !g.deadSmallBlind && g.order[g.sbPos] != nil {
+		sb = g.SeatOf(g.order[g.sbPos])
+	}
 
-	return sbIndex, bbIndex
+	bb := SpectatorSeat
+	if g.order[g.bbPos] != nil {
+		bb = g.SeatOf(g.order[g.bbPos])
+	}
+
+	return sb, bb
 }
 
 func (g *Game) StartNewHand() error {
 	if len(g.Players) < 2 {
 		return fmt.Errorf("not enough players for new game")
 	}
+
+	g.ensurePositioned()
+	// Occupancy may have changed since the button last moved -- a player
+	// busting takes effect between hands -- so the blinds are re-derived
+	// against who is actually here. This never advances the big blind, it
+	// only settles where the other two positions fall.
+	g.derivePositions()
 
 	g.Deck = deck.NewDeck()
 	g.Board = deck.Board{}
@@ -215,8 +384,15 @@ func (g *Game) StartNewHand() error {
 	// Blinds go in through the normal betting path so a short stack posts
 	// what it has and is marked all-in, which is the earliest side pot
 	// any table will see.
-	g.Pot += g.postBlind(g.Players[sbIndex], g.SmallBlind)
-	g.Pot += g.postBlind(g.Players[bbIndex], g.BigBlind)
+	//
+	// A dead small blind is simply not posted: the seat that owed it has
+	// been vacated, and nobody covers for them.
+	if sbIndex != SpectatorSeat {
+		g.Pot += g.postBlind(g.Players[sbIndex], g.SmallBlind)
+	}
+	if bbIndex != SpectatorSeat {
+		g.Pot += g.postBlind(g.Players[bbIndex], g.BigBlind)
+	}
 
 	// Players still owe the full big blind even when the blind itself was
 	// posted short.
@@ -237,31 +413,61 @@ func (g *Game) postBlind(p *player.Player, amount int) int {
 	return posted
 }
 
+// MoveButton advances the blinds one seat for the next hand.
+//
+// The big blind is what moves; the small blind and button are derived
+// back from it. A vacated seat that has just served as the dead button
+// has finished its orbit and leaves the ring here.
 func (g *Game) MoveButton() {
-	g.ButtonIndex = (g.ButtonIndex + 1) % len(g.Players)
+	if len(g.order) == 0 {
+		return
+	}
+	g.ensurePositioned()
+
+	if g.order[g.buttonPos] == nil {
+		g.dropSeat(g.buttonPos)
+		if len(g.order) == 0 {
+			return
+		}
+	}
+
+	g.bbPos = g.nextOccupied(g.bbPos)
+	g.derivePositions()
 }
 
 // firstToAct returns the seat that opens the given street. Callers should
 // never compute this themselves; the heads-up rules invert both cases and
 // getting them wrong is silent.
 func (g *Game) firstToAct(s Street) int {
-	n := len(g.Players)
+	order := g.clockwiseFromButton()
+	if len(order) == 0 {
+		return 0
+	}
+
 	_, bbIndex := g.getBlindIndices()
 
 	if s == Preflop {
-		if n == 2 {
+		if len(g.Players) == 2 && g.ButtonIndex != SpectatorSeat {
 			// Heads-up the button is the small blind and acts first
 			// before the flop.
 			return g.ButtonIndex
 		}
-		return (bbIndex + 1) % n
+		// Under the gun: the seat after the big blind in ring order.
+		for i, seat := range order {
+			if seat == bbIndex {
+				return order[(i+1)%len(order)]
+			}
+		}
+		return order[0]
 	}
 
-	if n == 2 {
+	if len(g.Players) == 2 && bbIndex != SpectatorSeat {
 		// After the flop the button acts last, so the big blind opens.
 		return bbIndex
 	}
-	return (g.ButtonIndex + 1) % n
+
+	// First live seat left of the button, dead or not.
+	return order[0]
 }
 
 func (g *Game) contestingCount() int {

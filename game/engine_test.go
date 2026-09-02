@@ -152,7 +152,7 @@ func TestPayoutOddChipGoesLeftOfButton(t *testing.T) {
 	g := &gv
 	a := seat(g, "Alice", 0)
 	b := seat(g, "Bob", 0)
-	g.ButtonIndex = 0 // so Bob, in seat 1, is first left of the button
+	g.SetButton(0) // so Bob, in seat 1, is first left of the button
 
 	a.TotalBet, b.TotalBet = 50, 51
 	g.Pot = 101
@@ -185,7 +185,7 @@ func TestFirstToActHeadsUpInverts(t *testing.T) {
 	g := &gv
 	seat(g, "Alice", 100)
 	seat(g, "Bob", 100)
-	g.ButtonIndex = 0
+	g.SetButton(0)
 
 	if got := g.firstToAct(Preflop); got != 0 {
 		t.Errorf("heads-up the button acts first preflop, expected 0, got %d", got)
@@ -201,7 +201,7 @@ func TestFirstToActThreeHanded(t *testing.T) {
 	seat(g, "Alice", 100)
 	seat(g, "Bob", 100)
 	seat(g, "Charlie", 100)
-	g.ButtonIndex = 0 // SB is 1, BB is 2
+	g.SetButton(0) // SB is 1, BB is 2
 
 	if got := g.firstToAct(Preflop); got != 0 {
 		t.Errorf("expected the button to act first preflop three-handed, got %d", got)
@@ -257,7 +257,7 @@ func TestShortStackPostsBlindAllIn(t *testing.T) {
 	seat(g, "Deep", 1000)
 	short := seat(g, "Short", 5)
 
-	g.ButtonIndex = 0 // heads-up: seat 0 is the small blind
+	g.SetButton(0) // heads-up: seat 0 is the small blind
 
 	if err := g.StartNewHand(); err != nil {
 		t.Fatalf("StartNewHand: %v", err)
@@ -358,7 +358,7 @@ func TestSidePotEligibilityAwardsTheRightSeats(t *testing.T) {
 	short := seat(g, "Short", 0)
 	mid := seat(g, "Mid", 0)
 	deep := seat(g, "Deep", 0)
-	g.ButtonIndex = 2
+	g.SetButton(2)
 
 	short.TotalBet, short.AllIn = 100, true
 	mid.TotalBet = 400
@@ -547,7 +547,7 @@ func TestTurnDeadlineCoversRetries(t *testing.T) {
 
 	seat(g, "Alice", 1000)
 	seat(g, "Bob", 1000)
-	g.ButtonIndex = 0
+	g.SetButton(0)
 
 	// Checking is illegal for the small blind facing the big blind.
 	g.Sources[0] = stallingIllegalSource{}

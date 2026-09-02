@@ -58,6 +58,23 @@ Disconnecting mid-hand folds you immediately rather than holding everyone
 else for the rest of the clock. Reconnect with the same SSH key and you get
 your stack back.
 
+## The dead button
+
+When someone busts or leaves, their seat stays in the ring for one orbit
+rather than the table closing up around it. The big blind then advances by
+exactly one seat every hand, which is the promise the dead button rule
+exists to keep: nobody posts the big blind twice running, and nobody skips
+it.
+
+The consequence is that two positions can land on an empty seat. The small
+blind goes dead — it is simply not posted, and no neighbour is charged for
+it — and the button itself can sit on the vacated seat for a hand. The
+vacated seat leaves the ring once the button has passed over it.
+
+Compacting the seat list on every departure is what makes the naive version
+unfair: the seats renumber underneath the button, so a player can end up on
+it twice running, or pay the big blind twice, or skip it entirely.
+
 ## How it fits together
 
 ```

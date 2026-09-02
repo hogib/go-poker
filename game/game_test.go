@@ -32,7 +32,7 @@ func TestGetBlindIndices(t *testing.T) {
 		g9.AddPlayer(&p)
 	}
 
-	g9.ButtonIndex = 8
+	g9.SetButton(8)
 	sb, bb := g9.getBlindIndices()
 
 	if sb != 0 {
@@ -49,13 +49,13 @@ func TestGetBlindIndices(t *testing.T) {
 	g2.AddPlayer(&pA)
 	g2.AddPlayer(&pB)
 
-	g2.ButtonIndex = 0
+	g2.SetButton(0)
 	sb2, bb2 := g2.getBlindIndices()
 	if sb2 != 0 || bb2 != 1 {
 		t.Errorf("Heads-Up Button 0 failed: expected SB 0 and BB 1, got SB %d and BB %d", sb2, bb2)
 	}
 
-	g2.ButtonIndex = 1
+	g2.SetButton(1)
 	sb2, bb2 = g2.getBlindIndices()
 	if sb2 != 1 || bb2 != 0 {
 		t.Errorf("Heads-Up Button 1 failed: expected SB 1 and BB 0, got SB %d and BB %d", sb2, bb2)
@@ -108,7 +108,7 @@ func TestMoveButton(t *testing.T) {
 		g.AddPlayer(&p)
 	}
 
-	g.ButtonIndex = 0
+	g.SetButton(0)
 	g.MoveButton() // Should move to 1
 	g.MoveButton() // Should move to 2
 	g.MoveButton() // Should wrap back to 0

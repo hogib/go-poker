@@ -69,9 +69,11 @@ func (g *Game) Payout() HandResult {
 
 	for _, pot := range pots {
 		if len(pot.Eligible) == 0 {
-			// Nobody left to claim it. This should not happen in a
-			// well-formed hand, but silently dropping chips would be
-			// worse than leaving them for the next pot layer.
+			// Nobody left to claim it. Unreachable in a well-formed hand,
+			// but the chips are still reported so the layer total matches
+			// the pot -- losing them quietly would hide exactly the kind
+			// of bug that invariant exists to catch.
+			result.Pots = append(result.Pots, PotResult{Amount: pot.Amount})
 			continue
 		}
 
@@ -133,17 +135,18 @@ func bestOf(seats []int, scores map[int]int) []int {
 	return winners
 }
 
-// oddChipOrder walks the winners clockwise from the seat left of the button.
+// oddChipOrder walks the winners clockwise from the seat left of the
+// button. It goes through the seating ring rather than arithmetic on
+// ButtonIndex, which is SpectatorSeat when the button is dead -- and
+// (-1 + step) would quietly pick the wrong seat rather than fail.
 func (g *Game) oddChipOrder(winners []int) []int {
-	n := len(g.Players)
 	member := make(map[int]bool, len(winners))
 	for _, seat := range winners {
 		member[seat] = true
 	}
 
 	ordered := make([]int, 0, len(winners))
-	for step := 1; step <= n; step++ {
-		seat := (g.ButtonIndex + step) % n
+	for _, seat := range g.clockwiseFromButton() {
 		if member[seat] {
 			ordered = append(ordered, seat)
 		}

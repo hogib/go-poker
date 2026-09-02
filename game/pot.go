@@ -81,8 +81,19 @@ func (g *Game) buildPots() []Pot {
 		pots = append(pots, Pot{Amount: amount, Eligible: eligible})
 	}
 
-	if carry > 0 && len(pots) > 0 {
-		pots[len(pots)-1].Amount += carry
+	if carry > 0 {
+		if len(pots) > 0 {
+			pots[len(pots)-1].Amount += carry
+			carry = 0
+		} else {
+			// Every contributor folded, so there is no layer to fold the
+			// chips into. That should not be reachable in a well-formed
+			// hand -- somebody has to still be in it -- but dropping the
+			// chips silently would break the conservation invariant the
+			// fuzz gate rests on, so report them with nobody eligible and
+			// let Payout decide.
+			pots = append(pots, Pot{Amount: carry})
+		}
 	}
 
 	return pots
