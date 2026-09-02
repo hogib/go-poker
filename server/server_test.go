@@ -140,12 +140,22 @@ func TestIdentifyDistinguishesAddresses(t *testing.T) {
 	}
 }
 
-func TestDisplayName(t *testing.T) {
-	if got := displayName(fakeSession{user: "alice"}); got != "alice" {
-		t.Errorf("expected the ssh username, got %q", got)
-	}
-	if got := displayName(fakeSession{}); got == "" {
-		t.Error("a nameless session still needs something to show at the table")
+// The ssh username is someone's real login name. It identifies them for
+// seating purposes through the key fingerprint, and must not end up on
+// the table where everyone can read it.
+func TestTheSSHUsernameNeverReachesTheTable(t *testing.T) {
+	tbl := testTable()
+
+	for _, user := range []string{"oguz", "root", "j.smith"} {
+		sess := fakeSession{user: user, key: testKey(t), addr: fakeAddr("10.0.0.1:1")}
+		session, _ := join(tbl, sess)
+
+		if got := session.Name(); strings.EqualFold(got, user) {
+			t.Errorf("the ssh username %q was published as the table name %q", user, got)
+		}
+		if session.Name() == "" {
+			t.Error("a player still needs something to be called")
+		}
 	}
 }
 
@@ -173,8 +183,8 @@ func TestJoinRegistersTheSessionUnderItsKeyIdentity(t *testing.T) {
 	if publish == nil {
 		t.Fatal("join returned no way to publish the program")
 	}
-	if session.Name() != "alice" {
-		t.Errorf("expected the ssh username at the table, got %q", session.Name())
+	if session.Name() == "" {
+		t.Error("a player needs a name to show at the table")
 	}
 	if got := tbl.Session(identify(sess)); got != session {
 		t.Error("the session should be registered under its key identity")
@@ -681,8 +691,9 @@ func TestReconnectPrefillsTheChosenName(t *testing.T) {
 	key := testKey(t)
 
 	first, _ := join(tbl, fakeSession{user: "alice", key: key, addr: fakeAddr("10.0.0.1:1")})
-	if first.Name() != "alice" {
-		t.Fatalf("a first connection should use the ssh username, got %q", first.Name())
+	handed := first.Name()
+	if handed == "" {
+		t.Fatal("a first connection should be given a handle")
 	}
 
 	if _, err := tbl.Rename(first.ID, "Ace"); err != nil {
@@ -691,6 +702,137 @@ func TestReconnectPrefillsTheChosenName(t *testing.T) {
 
 	again, _ := join(tbl, fakeSession{user: "alice", key: key, addr: fakeAddr("10.0.0.2:2")})
 	if again.Name() != "Ace" {
-		t.Errorf("a reconnect should keep the chosen name, got %q", again.Name())
+		t.Errorf("a reconnect should keep the chosen name, got %q (was handed %q)",
+			again.Name(), handed)
 	}
+}
+
+// The table view renders over a real connection at a real terminal size.
+// The layout choice has unit tests; this checks the whole path, since a
+// session whose pty reports no size falls back to the compact list and
+// nothing else here would notice.
+func TestTableViewRendersOverSSH(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := Config{
+		Host:        "127.0.0.1",
+		Port:        0,
+		HostKeyPath: filepath.Join(dir, "hostkey"),
+	}.withDefaults()
+
+	tbl := testTable()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tbl.Run(ctx)
+
+	srv, err := newServer(cfg, tbl)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	go srv.Serve(listener)
+	defer srv.Close()
+
+	// Two players, so there is a hand to draw.
+	screens := make([]<-chan string, 0, 2)
+	for i := 0; i < 2; i++ {
+		screens = append(screens, playOverSSH(t, listener.Addr().String()))
+	}
+
+	var lastScreen string
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("the table never rendered a pot over ssh; last screen:\n%s", lastScreen)
+		case screen := <-screens[0]:
+			lastScreen = screen
+			// The felt puts the pot in the middle of the table, well
+			// clear of the left margin the compact list uses.
+			for _, line := range strings.Split(screen, "\n") {
+				if i := strings.Index(line, "pot "); i > 20 {
+					return
+				}
+			}
+		}
+	}
+}
+
+// playOverSSH opens a session at a real terminal size, accepts the
+// prefilled name, takes a seat, and keeps checking. It streams rendered
+// screens back for the caller to assert on.
+func playOverSSH(t *testing.T, addr string) <-chan string {
+	t.Helper()
+
+	client := dialAsPlayer(t, addr)
+	t.Cleanup(func() { client.Close() })
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("opening a session: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	if err := sess.RequestPty("xterm-256color", 42, 110, gossh.TerminalModes{}); err != nil {
+		t.Fatalf("requesting a pty: %v", err)
+	}
+
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout: %v", err)
+	}
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin: %v", err)
+	}
+	if err := sess.Shell(); err != nil {
+		t.Fatalf("starting the shell: %v", err)
+	}
+
+	// Accept the name, take the seat, then check every hand along.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		stdin.Write([]byte("\r"))
+		time.Sleep(200 * time.Millisecond)
+		stdin.Write([]byte("\r"))
+		for i := 0; i < 100; i++ {
+			time.Sleep(150 * time.Millisecond)
+			if _, err := stdin.Write([]byte("c")); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Chunks arrive split at arbitrary points, so what is streamed back
+	// is everything drawn so far rather than the latest fragment.
+	screens := make(chan string, 64)
+	go func() {
+		defer close(screens)
+
+		var seen strings.Builder
+		buf := make([]byte, 8192)
+
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				seen.Write(buf[:n])
+				select {
+				case screens <- stripANSI(seen.String()):
+				default:
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	return screens
 }

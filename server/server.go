@@ -162,7 +162,11 @@ func handler(t *table.Table) bm.ProgramHandler {
 func join(t *table.Table, sess ssh.Session) (*table.Session, func(*tea.Program)) {
 	var holder atomic.Pointer[tea.Program]
 
-	session := t.Join(identify(sess), displayName(sess), func(msg any) {
+	// No name is passed: the table hands out a poker handle instead, and
+	// the player picks their own from the name screen. The ssh username
+	// is someone's real login name, and a table has no business
+	// publishing it to everyone in the room.
+	session := t.Join(identify(sess), "", func(msg any) {
 		if p := holder.Load(); p != nil {
 			p.Send(msg)
 		}
@@ -227,11 +231,4 @@ func identify(sess ssh.Session) string {
 		return "key:" + base64.RawStdEncoding.EncodeToString(sum[:])
 	}
 	return "addr:" + sess.RemoteAddr().String()
-}
-
-func displayName(sess ssh.Session) string {
-	if name := sess.User(); name != "" {
-		return name
-	}
-	return "player"
 }

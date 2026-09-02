@@ -2,6 +2,8 @@ package table
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -162,7 +164,7 @@ func (t *Table) Join(id, name string, notify func(any)) *Session {
 	// The stack is left at zero here and filled in by the Run goroutine
 	// when the player is seated, since that goroutine owns every chip
 	// count on the table.
-	s := newSession(id, name, 0, notify)
+	s := newSession(id, t.uniqueNameLocked(name, id), 0, notify)
 	t.sessions[id] = s
 	public := t.lastPublic
 	lobby := t.lobbyLocked(s)
@@ -311,6 +313,66 @@ func (t *Table) Stand(sessionID string) bool {
 // Rebuy is Sit under the name a busted player would look for. The stack
 // is topped up when the seat is granted.
 func (t *Table) Rebuy(sessionID string) bool { return t.Sit(sessionID) }
+
+// handles are the names players are given before they pick their own.
+//
+// The ssh username is deliberately not used: it is usually someone's
+// real login name, and there is no reason for a poker table to publish
+// it to everyone in the room.
+var handles = []string{
+	"Ace", "Deuce", "Trey", "Nines", "Cowboy", "Rocket", "Kicker", "Boat",
+	"Wheel", "River", "Turn", "Flop", "Blind", "Button", "Chip", "Straddle",
+	"Bluff", "Rounder", "Grinder", "Shark", "Railbird", "Dealer",
+}
+
+// DefaultName picks a handle for a session. It is derived from the
+// session's own id, so a player who reconnects before choosing a name
+// finds the same one waiting rather than a new one each time.
+func DefaultName(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	n := binary.BigEndian.Uint32(sum[:4])
+	return handles[int(n%uint32(len(handles)))]
+}
+
+// uniqueNameLocked returns a name nobody else is using, numbering it if
+// it is taken. The caller holds t.mu.
+//
+// Two people who ssh in under the same username would otherwise both
+// arrive as that name, and then neither could confirm it: each would be
+// refused for clashing with the other. Seating them under distinct names
+// from the start is what makes confirming your own name always work.
+func (t *Table) uniqueNameLocked(name, id string) string {
+	base, err := CleanName(name)
+	if err != nil {
+		base = DefaultName(id)
+	}
+
+	taken := func(candidate string) bool {
+		for otherID, other := range t.sessions {
+			if otherID != id && strings.EqualFold(other.Name(), candidate) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !taken(base) {
+		return base
+	}
+
+	for n := 2; ; n++ {
+		suffix := fmt.Sprintf(" %d", n)
+
+		trimmed := base
+		if runes := []rune(base); len(runes)+len(suffix) > MaxNameLength {
+			trimmed = string(runes[:MaxNameLength-len(suffix)])
+		}
+
+		if candidate := trimmed + suffix; !taken(candidate) {
+			return candidate
+		}
+	}
+}
 
 // lobbyLocked builds the menu's view of the table. The caller holds t.mu.
 func (t *Table) lobbyLocked(s *Session) LobbyMsg {

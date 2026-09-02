@@ -78,9 +78,15 @@ func (m Model) header() string {
 	return logo + m.styles.Tag.Render("  no-limit texas hold'em, over ssh") + "\n"
 }
 
+// panelPadding is the horizontal padding inside a panel, both sides
+// together. lipgloss counts padding inside Width but the border outside
+// it, so a panel asked for the content width alone comes out six columns
+// too narrow and everything sized against it wraps.
+const panelPadding = 6
+
 // panel wraps content in the bordered box, sized to the terminal.
 func (m Model) panel(style lipgloss.Style, content string) string {
-	return style.Width(m.inner()).Render(content)
+	return style.Width(m.inner() + panelPadding).Render(content)
 }
 
 // ---- name ------------------------------------------------------------
@@ -234,12 +240,18 @@ func (m Model) renderHelp() string {
 		m.hint("esc", "back") + "\n"
 }
 
-// ---- felt -----------------------------------------------------------
+// useFelt reports whether to draw the oval rather than the seat list.
+func (m Model) useFelt() bool { return !m.listView && m.feltFits() }
 
-func (m Model) renderTable() string {
-	if !m.hasView {
-		return m.panel(m.styles.Felt, m.styles.Dim.Render("Waiting for the table...")) +
-			"\n" + m.hint("esc", "menu", "q", "quit") + "\n"
+// renderSeating draws the table itself: the oval where there is room for
+// it, and a compact list where there is not.
+func (m Model) renderSeating() string {
+	if m.useFelt() {
+		out := m.renderFelt()
+		if m.view.Seat != game.SpectatorSeat {
+			out += "\n" + m.renderHole()
+		}
+		return out
 	}
 
 	var b strings.Builder
@@ -252,10 +264,19 @@ func (m Model) renderTable() string {
 		b.WriteString("\n" + m.renderHole())
 	}
 
-	felt := m.panel(m.styles.Felt, b.String())
+	return m.panel(m.styles.Felt, b.String())
+}
+
+// ---- felt -----------------------------------------------------------
+
+func (m Model) renderTable() string {
+	if !m.hasView {
+		return m.panel(m.styles.Felt, m.styles.Dim.Render("Waiting for the table...")) +
+			"\n" + m.hint("esc", "menu", "q", "quit") + "\n"
+	}
 
 	var out strings.Builder
-	out.WriteString(felt + "\n")
+	out.WriteString(m.renderSeating() + "\n")
 
 	if prompt := m.renderPrompt(); prompt != "" {
 		out.WriteString(prompt + "\n")
@@ -336,10 +357,14 @@ func (m Model) clockWidth() int {
 	return 12
 }
 
-// renderClock draws the shot clock as a draining bar plus the seconds
-// left. It returns empty when no clock is running or the terminal is too
-// narrow to spare the columns.
-func (m Model) renderClock() string {
+// renderClock draws the shot clock beside a seat in the list layout,
+// sized to whatever columns are spare.
+func (m Model) renderClock() string { return m.clockBar(m.clockWidth()) }
+
+// clockBar draws the shot clock as a draining bar plus the seconds left.
+// It returns empty when no clock is running, and falls back to the
+// seconds alone when there is no room for the bar.
+func (m Model) clockBar(width int) string {
 	if m.view.Deadline.IsZero() || m.view.TurnLength <= 0 {
 		return ""
 	}
@@ -362,8 +387,7 @@ func (m Model) renderClock() string {
 		style = m.styles.Pot
 	}
 
-	width := m.clockWidth()
-	if width == 0 {
+	if width <= 0 {
 		return style.Render(fmt.Sprintf("%ds", seconds))
 	}
 
@@ -476,9 +500,9 @@ func (m Model) keyHints() string {
 
 	if !m.onClock {
 		if m.canRebuy() {
-			return m.hint("r", "buy in", "esc", "menu", "q", "quit")
+			return m.hint("r", "buy in", "v", m.viewHint(), "esc", "menu", "q", "quit")
 		}
-		return m.hint("esc", "menu", "q", "quit")
+		return m.hint("v", m.viewHint(), "esc", "menu", "q", "quit")
 	}
 
 	pairs := []string{"f", "fold"}
@@ -490,9 +514,17 @@ func (m Model) keyHints() string {
 	if m.view.Legal(game.Raise) {
 		pairs = append(pairs, "r", "raise", "a", "all in")
 	}
-	pairs = append(pairs, "esc", "menu")
+	pairs = append(pairs, "v", m.viewHint(), "esc", "menu")
 
 	return m.hint(pairs...)
+}
+
+// viewHint names what pressing v would switch to.
+func (m Model) viewHint() string {
+	if m.useFelt() {
+		return "compact"
+	}
+	return "table"
 }
 
 // hint renders alternating key/description pairs as a footer, dropping

@@ -68,6 +68,11 @@ type Model struct {
 	screen screen
 	cursor int
 
+	// listView forces the compact seat list even where the oval would
+	// fit. It is off by default: the oval is what makes whose turn it is
+	// obvious at a glance.
+	listView bool
+
 	// naming holds the name being typed. The screen is shown first, and
 	// again whenever the player picks "Change name".
 	naming nameInput
@@ -400,6 +405,15 @@ func (m Model) handleTableKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "m":
 		m.screen = screenMenu
 		m.cursor = 0
+		return m, nil
+
+	case "v":
+		m.listView = !m.listView
+		if m.listView {
+			m.status = "Compact view."
+		} else {
+			m.status = "Table view."
+		}
 		return m, nil
 
 	case "q":

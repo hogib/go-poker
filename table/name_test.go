@@ -2,6 +2,7 @@ package table
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -284,5 +285,126 @@ func TestRenameKeepsTheSeatAndStack(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("renaming should not touch the stack: %d became %d", before, after)
+	}
+}
+
+// Two people who ssh in under the same username must not both arrive as
+// that name: each would then be refused their own, because it clashes
+// with the other's.
+func TestJoiningTwiceUnderOneUsernameGivesDistinctNames(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	first := tbl.Join("key-one", "alice", (&recorder{}).notify)
+	second := tbl.Join("key-two", "alice", (&recorder{}).notify)
+
+	if first.Name() == second.Name() {
+		t.Fatalf("both players arrived as %q", first.Name())
+	}
+	if first.Name() != "alice" {
+		t.Errorf("the first should keep the plain name, got %q", first.Name())
+	}
+	if second.Name() != "alice 2" {
+		t.Errorf("the second should be numbered, got %q", second.Name())
+	}
+
+	// And each can now confirm the name they were given.
+	for _, id := range []string{"key-one", "key-two"} {
+		name := tbl.Session(id).Name()
+		if _, err := tbl.Rename(id, name); err != nil {
+			t.Errorf("%s could not confirm its own name %q: %v", id, name, err)
+		}
+	}
+}
+
+func TestNumberingKeepsNamesWithinTheLimit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	long := strings.Repeat("x", MaxNameLength)
+	for i := 0; i < 4; i++ {
+		s := tbl.Join(fmt.Sprintf("key-%d", i), long, (&recorder{}).notify)
+
+		if runes := []rune(s.Name()); len(runes) > MaxNameLength {
+			t.Errorf("session %d got a %d-rune name: %q", i, len(runes), s.Name())
+		}
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < 4; i++ {
+		name := tbl.Session(fmt.Sprintf("key-%d", i)).Name()
+		if seen[name] {
+			t.Errorf("%q was handed out twice", name)
+		}
+		seen[name] = true
+	}
+}
+
+// An ssh username is attacker-controlled text, so it gets the same
+// cleaning as a name a player types.
+func TestJoinCleansTheIncomingName(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	s := tbl.Join("key-one", "bob\x1b[2Jgotcha", (&recorder{}).notify)
+
+	if strings.ContainsRune(s.Name(), '\x1b') {
+		t.Errorf("an escape sequence survived the ssh username: %q", s.Name())
+	}
+
+	blank := tbl.Join("key-two", "\x00\x01", (&recorder{}).notify)
+	if blank.Name() == "" {
+		t.Error("a username with nothing printable in it still needs a name")
+	}
+}
+
+// The handle a player is given is derived from their session, so a
+// reconnect before they have chosen a name finds the same one rather
+// than a different one every time.
+func TestDefaultNameIsStableForASession(t *testing.T) {
+	if a, b := DefaultName("key:abc"), DefaultName("key:abc"); a != b {
+		t.Errorf("the same session got %q and then %q", a, b)
+	}
+
+	seen := map[string]int{}
+	for i := 0; i < 200; i++ {
+		seen[DefaultName(fmt.Sprintf("key:%d", i))]++
+	}
+
+	if len(seen) < 5 {
+		t.Errorf("handles should vary between players, only saw %d: %v", len(seen), seen)
+	}
+	for name := range seen {
+		if _, err := CleanName(name); err != nil {
+			t.Errorf("handle %q is not a usable name: %v", name, err)
+		}
+	}
+}
+
+// A session with no name given is handed a handle, not left blank and
+// not given the caller's own text.
+func TestJoinWithNoNameHandsOutAHandle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	s := tbl.Join("key-one", "", (&recorder{}).notify)
+
+	if s.Name() == "" {
+		t.Fatal("a nameless join should still get a handle")
+	}
+	if s.Name() != DefaultName("key-one") {
+		t.Errorf("expected the handle for this session, got %q", s.Name())
 	}
 }

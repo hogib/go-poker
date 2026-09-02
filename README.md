@@ -10,6 +10,14 @@ ssh -p 2222 yourname@your-host
 ## Running it
 
 ```sh
+make run          # build and deal on 2222
+make check        # gofmt, go vet, and every test under -race
+make help         # everything else
+```
+
+Or by hand:
+
+```sh
 go build -o ssh-holdem .
 ./ssh-holdem
 ```
@@ -37,7 +45,12 @@ screen.
 
 ## Playing
 
-Connecting drops you in the lobby, not into a hand:
+Connecting asks what to call you, prefilled with a poker handle. Your ssh
+username is never used at the table: it is usually a real login name, and
+there is no reason to publish it to everyone in the room. Enter accepts the
+handle, or type over it.
+
+Then the lobby, not a hand in progress:
 
 ```
   ♠ ssh holdem ♥  no-limit texas hold'em, over ssh
@@ -64,6 +77,39 @@ rather than hidden so the menu never reflows under the cursor. Up to nine
 players share one table; hands deal automatically whenever at least two are
 seated, and sitting down or standing up takes effect between hands.
 
+The table is drawn as a table, with you always at the bottom:
+
+```
+                             Frank         Erin
+                             2850          2480
+                             bets 60
+
+   Gina      ╭──────────────────────────────────────╮   Dave
+   3220      │                                      │   2110
+   folded    │                 turn                 │   all in 940
+             │             2♣ 7♦ T♠ A♥              │
+             │               pot 320                │
+   Hank      │                                      │   Carol   D
+   3590      ╰──────────────────────────────────────╯   1740
+   all in                                               folded
+
+                             ╭──────────────╮
+                  Iris       │you           │       Bob
+                  3960       │1000          │       1370
+                             │bets 60       │       bets 60
+                             │███████░░░ 21s│
+                             ╰──────────────╯
+  you      A♠ K♥
+```
+
+Whoever the table is waiting on gets a box drawn round them with their shot
+clock draining inside it, so it is obvious whose action it is without
+reading anything. Seats are placed clockwise from you, so the layout means
+the same thing to every player.
+
+`v` switches to a compact list, which is also what a terminal too small for
+the oval falls back to on its own.
+
 At the table:
 
 | Key | Action |
@@ -73,14 +119,23 @@ At the table:
 | `r` | raise — type an amount, `enter` to confirm, `esc` to cancel |
 | `a` | shove all in |
 | `r` | buy in again, when you have been knocked out |
+| `v` | switch between the table and the compact list |
 | `esc` | back to the menu |
 | `q` | quit |
 
-The seat on the clock is marked `▸`, your own seat is highlighted, and your
-remaining time counts down beside the prompt, turning red under five
-seconds. Let it run out and you check if you can and fold if you cannot.
-Being put on the clock pulls you back to the felt from wherever you are, so
-nobody times out on a help screen.
+Your remaining time counts down beside the prompt as well, turning red under
+five seconds. Let it run out and you check if you can and fold if you
+cannot. Being put on the clock pulls you back to the table from wherever you
+are, so nobody times out on a help screen.
+
+Names are yours for as long as you are connected: twelve characters, no
+duplicates, and non-printable characters are stripped — a name is written
+into every other player's terminal, so an escape sequence in one would let a
+player scribble on everyone else's screen.
+
+Everything scales to the terminal. Panels take the width they are given, the
+hand log trims on a short screen, and the key hints shed their least useful
+entries rather than wrapping.
 
 Disconnecting mid-hand folds you immediately rather than holding everyone
 else for the rest of the clock. Reconnect with the same SSH key and you get
@@ -120,7 +175,7 @@ it twice running, or pay the big blind twice, or skip it entirely.
 | `player` | one seat's stack and per-street/per-hand contributions |
 | `game` | the rules: blinds, betting rounds, streets, side pots, showdown |
 | `table` | one concurrent table; owns the game, fans snapshots out to sessions |
-| `tui` | the Bubble Tea model that draws the lobby and the felt |
+| `tui` | the Bubble Tea model that draws the lobby, the table and the felt |
 | `server` | the SSH listener that turns a connection into a player |
 
 Three decisions shape the rest:
@@ -190,7 +245,7 @@ Every package has tests, and they all run clean under `-race`:
 | `player` | betting, clamping to the stack, all-in, reset discipline |
 | `game` | blinds, betting rounds, side pots, showdown, the dead button, plus the fuzz gate |
 | `table` | concurrency, redaction, disconnect, reconnect, banking, the lobby |
-| `tui` | every key and screen, driven by feeding messages to the model |
+| `tui` | every key and screen, the oval layout at every table and terminal size |
 | `server` | identity, config, and real SSH connections end to end |
 
 The `tui` tests need no terminal: the model drives the table through a

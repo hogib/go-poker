@@ -11,6 +11,13 @@ import (
 	"ssh_holdem/table"
 )
 
+// compact forces the seat list. These tests are about that layout
+// specifically; the oval has its own tests.
+func compact(m Model) Model {
+	m.listView = true
+	return m
+}
+
 func resize(m Model, w, h int) Model {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return next.(Model)
@@ -99,6 +106,7 @@ func TestTaglineDropsOnANarrowTerminal(t *testing.T) {
 // the top of the screen.
 func TestShortTerminalTrimsTheLog(t *testing.T) {
 	m, _ := atMenu()
+	m = compact(m)
 	m = send(m, table.StateMsg{View: seatedView(0)})
 	m.screen = screenTable
 
@@ -150,6 +158,7 @@ func clockView(remaining, length time.Duration) game.PlayerView {
 // see how long the one they are waiting on has left.
 func TestClockBarIsShownForTheActingSeat(t *testing.T) {
 	m, _ := atMenu()
+	m = compact(m)
 	m = send(m, table.StateMsg{View: clockView(30*time.Second, 30*time.Second)})
 	m.screen = screenTable
 	m = resize(m, 100, 30)
@@ -172,12 +181,12 @@ func TestClockBarIsShownForTheActingSeat(t *testing.T) {
 
 func TestClockBarDrainsAsTimeRuns(t *testing.T) {
 	full, _ := atMenu()
-	full = resize(full, 100, 30)
+	full = compact(resize(full, 100, 30))
 	full = send(full, table.StateMsg{View: clockView(30*time.Second, 30*time.Second)})
 	full.screen = screenTable
 
 	nearlyOut, _ := atMenu()
-	nearlyOut = resize(nearlyOut, 100, 30)
+	nearlyOut = compact(resize(nearlyOut, 100, 30))
 	nearlyOut = send(nearlyOut, table.StateMsg{View: clockView(3*time.Second, 30*time.Second)})
 	nearlyOut.screen = screenTable
 
@@ -194,7 +203,7 @@ func TestClockBarDrainsAsTimeRuns(t *testing.T) {
 
 func TestNoClockBarWhenNobodyIsOnTheClock(t *testing.T) {
 	m, _ := atMenu()
-	m = resize(m, 100, 30)
+	m = compact(resize(m, 100, 30))
 
 	view := seatedView(0)
 	view.Acting = game.SpectatorSeat
@@ -241,7 +250,7 @@ func TestTickSpeedsUpOnlyWhileTheClockRuns(t *testing.T) {
 
 func TestSeatRowsStayAlignedWithAwkwardNames(t *testing.T) {
 	m, _ := atMenu()
-	m = resize(m, 100, 30)
+	m = compact(resize(m, 100, 30))
 
 	view := seatedView(40)
 	view.Seats[0].Name = "Renée"
