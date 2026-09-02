@@ -61,6 +61,15 @@ type Table struct {
 	sessions map[string]*Session
 	lastView map[string]game.PlayerView
 
+	// banked holds the chips of players who have disconnected, keyed by
+	// their SSH fingerprint. Without it a player who drops and comes
+	// back is a brand new seat with a fresh buy-in, which is both a
+	// worse experience and free money.
+	//
+	// Only the Run goroutine touches it, for the same reason it is the
+	// only one that touches Player.Chips.
+	banked map[string]int
+
 	seatOps chan seatOp
 	wake    chan struct{}
 
@@ -96,6 +105,7 @@ func New(cfg Config) *Table {
 		game:     &g,
 		sessions: make(map[string]*Session),
 		lastView: make(map[string]game.PlayerView),
+		banked:   make(map[string]int),
 		seatOps:  make(chan seatOp, 32),
 		wake:     make(chan struct{}, 1),
 	}
@@ -125,7 +135,10 @@ func (t *Table) Join(id, name string, notify func(any)) *Session {
 		return existing
 	}
 
-	s := newSession(id, name, t.cfg.BuyIn, notify)
+	// The stack is left at zero here and filled in by the Run goroutine
+	// when the player is seated, since that goroutine owns every chip
+	// count on the table.
+	s := newSession(id, name, 0, notify)
 	t.sessions[id] = s
 	t.mu.Unlock()
 
@@ -183,11 +196,12 @@ func (t *Table) Rebuy(sessionID string) bool {
 	s, ok := t.sessions[sessionID]
 	t.mu.Unlock()
 
-	if !ok || s.Player.Chips > 0 {
+	if !ok {
 		return false
 	}
 
-	s.Player.Chips = t.cfg.BuyIn
+	// Whether the player actually needs chips is decided by the Run
+	// goroutine, which is the only one allowed to read their stack.
 	t.seatOps <- seatOp{kind: opSit, session: s}
 	t.signal()
 
@@ -263,6 +277,7 @@ func (t *Table) applySeatOps() {
 				if t.game.SeatOf(op.session.Player) != game.SpectatorSeat {
 					continue
 				}
+				t.fundSeat(op.session)
 				src := &remoteSource{table: t, id: op.session.ID}
 				if err := t.game.AddPlayerWithSource(op.session.Player, src); err != nil {
 					op.session.send(InfoMsg{Text: err.Error()})
@@ -272,6 +287,10 @@ func (t *Table) applySeatOps() {
 					op.session.Name, op.session.Player.Chips))
 
 			case opStand:
+				// Bank the stack before the seat goes, so a player who
+				// reconnects gets their own chips back rather than a
+				// fresh buy-in.
+				t.banked[op.session.ID] = op.session.Player.Chips
 				if t.game.RemovePlayer(op.session.Player) {
 					t.broadcastInfo(fmt.Sprintf("%s leaves the table.", op.session.Name))
 				}
@@ -280,6 +299,26 @@ func (t *Table) applySeatOps() {
 			return
 		}
 	}
+}
+
+// fundSeat gives a player the stack they are entitled to: the one they
+// left with if they are returning, and a fresh buy-in if they are new or
+// busted. It runs on the Run goroutine, the only one that may touch a
+// chip count.
+func (t *Table) fundSeat(s *Session) {
+	if s.Player.Chips > 0 {
+		return
+	}
+
+	if banked, ok := t.banked[s.ID]; ok {
+		delete(t.banked, s.ID)
+		if banked > 0 {
+			s.Player.Chips = banked
+			return
+		}
+	}
+
+	s.Player.Chips = t.cfg.BuyIn
 }
 
 // reportBustouts tells anyone the engine dropped for having no chips that

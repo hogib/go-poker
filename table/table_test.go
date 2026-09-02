@@ -326,3 +326,116 @@ func waitFor(cond func() bool) <-chan struct{} {
 	}()
 	return done
 }
+
+// Reconnecting after a full disconnect must return the player's own
+// stack. Without banking, a losing player could drop and rejoin for a
+// fresh buy-in, which is free money.
+func TestReconnectAfterLeaveKeepsChips(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := testConfig()
+	// A long pause between hands gives the test a window in which no
+	// chips are moving, so the stack it reads is the stack Bob leaves
+	// with.
+	cfg.HandDelay = 3 * time.Second
+	tbl := New(cfg)
+	go tbl.Run(ctx)
+
+	alice, bob := &recorder{}, &recorder{}
+	tbl.Join("key-alice", "Alice", alice.notify)
+	bobSession := tbl.Join("key-bob", "Bob", bob.notify)
+
+	playCtx, stopPlay := context.WithCancel(ctx)
+	go autoPlay(playCtx, tbl, "key-alice", alice)
+	go autoPlay(playCtx, tbl, "key-bob", bob)
+
+	deadline := time.After(10 * time.Second)
+	for !bob.sawResult() {
+		select {
+		case <-deadline:
+			t.Fatal("no hand completed")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	stopPlay()
+
+	view, ok := bob.lastState()
+	if !ok {
+		t.Fatal("Bob never received a snapshot")
+	}
+	before := view.Seats[view.Seat].Chips
+	if before == cfg.BuyIn {
+		t.Skip("the hand left Bob exactly even; nothing to distinguish")
+	}
+
+	tbl.Leave(bobSession)
+
+	returning := &recorder{}
+	again := tbl.Join("key-bob", "Bob", returning.notify)
+	if again == bobSession {
+		t.Fatal("a full disconnect should produce a new session")
+	}
+	go autoPlay(ctx, tbl, "key-bob", returning)
+
+	deadline = time.After(10 * time.Second)
+	for {
+		if v, ok := returning.lastState(); ok && v.Seat != game.SpectatorSeat {
+			got := v.Seats[v.Seat].Chips
+			if got == cfg.BuyIn && before != cfg.BuyIn {
+				t.Errorf("Bob left with %d and came back to a fresh buy-in of %d", before, got)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Bob never got a seat back")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// fundSeat decides what stack a player sits down with. It runs only on
+// the Run goroutine, so it can be checked directly.
+func TestFundSeat(t *testing.T) {
+	tbl := New(testConfig())
+	buyIn := tbl.Config().BuyIn
+
+	t.Run("a new player gets the buy-in", func(t *testing.T) {
+		s := newSession("new", "New", 0, nil)
+		tbl.fundSeat(s)
+		if s.Player.Chips != buyIn {
+			t.Errorf("expected %d, got %d", buyIn, s.Player.Chips)
+		}
+	})
+
+	t.Run("a returning player gets their own stack back", func(t *testing.T) {
+		s := newSession("back", "Back", 0, nil)
+		tbl.banked["back"] = 137
+		tbl.fundSeat(s)
+		if s.Player.Chips != 137 {
+			t.Errorf("expected the banked 137, got %d", s.Player.Chips)
+		}
+		if _, still := tbl.banked["back"]; still {
+			t.Error("the banked stack should be consumed when it is paid out")
+		}
+	})
+
+	t.Run("a busted player gets a fresh buy-in", func(t *testing.T) {
+		s := newSession("bust", "Bust", 0, nil)
+		tbl.banked["bust"] = 0
+		tbl.fundSeat(s)
+		if s.Player.Chips != buyIn {
+			t.Errorf("expected a fresh %d, got %d", buyIn, s.Player.Chips)
+		}
+	})
+
+	t.Run("a seated player is not topped up", func(t *testing.T) {
+		s := newSession("rich", "Rich", 0, nil)
+		s.Player.Chips = 42
+		tbl.fundSeat(s)
+		if s.Player.Chips != 42 {
+			t.Errorf("a player with chips should keep exactly them, got %d", s.Player.Chips)
+		}
+	})
+}

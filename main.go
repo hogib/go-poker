@@ -1,55 +1,41 @@
 package main
 
 import (
-	"fmt"
-	"math/rand"
+	"flag"
+	"log"
+	"time"
 
-	"go_poker/game"
-	"go_poker/player"
+	"go_poker/server"
+	"go_poker/table"
 )
 
-// A headless driver for the engine. The real entry point becomes the SSH
-// server in phase 2; until then this is how you watch a hand play out.
 func main() {
-	g := game.NewGame(10, 20)
+	var (
+		host        = flag.String("host", "0.0.0.0", "address to listen on")
+		port        = flag.Int("port", 2222, "port to listen on")
+		hostKey     = flag.String("host-key", ".ssh/go_poker_ed25519", "path to the server's ssh host key; generated if absent")
+		smallBlind  = flag.Int("small-blind", 10, "small blind")
+		bigBlind    = flag.Int("big-blind", 20, "big blind")
+		buyIn       = flag.Int("buy-in", 2000, "starting stack")
+		turnTimeout = flag.Duration("turn-timeout", 30*time.Second, "shot clock per decision")
+		handDelay   = flag.Duration("hand-delay", 4*time.Second, "pause between hands")
+	)
+	flag.Parse()
 
-	names := []string{"Alice", "Bob", "Charlie", "Dana"}
-	r := rand.New(rand.NewSource(1))
-
-	for _, name := range names {
-		p := player.NewPlayer(name, 1000)
-		g.AddPlayerWithSource(&p, game.RandomBot{Rand: r})
+	cfg := server.Config{
+		Host:        *host,
+		Port:        *port,
+		HostKeyPath: *hostKey,
+		Table: table.Config{
+			SmallBlind:  *smallBlind,
+			BigBlind:    *bigBlind,
+			BuyIn:       *buyIn,
+			TurnTimeout: *turnTimeout,
+			HandDelay:   *handDelay,
+		},
 	}
 
-	for hand := 1; hand <= 5; hand++ {
-		g.RemoveBustedPlayers()
-		if len(g.Players) < 2 {
-			break
-		}
-
-		result, err := g.PlayHand()
-		if err != nil {
-			fmt.Println("hand failed:", err)
-			return
-		}
-
-		fmt.Printf("\n--- hand %d ---\n", hand)
-		fmt.Printf("board: %s\n", result.Board)
-
-		for _, pot := range result.Pots {
-			names := make([]string, 0, len(pot.Winners))
-			for _, seat := range pot.Winners {
-				names = append(names, g.Players[seat].Name)
-			}
-			if result.Uncontested {
-				fmt.Printf("%d to %v (everyone folded)\n", pot.Amount, names)
-			} else {
-				fmt.Printf("%d to %v with %s\n", pot.Amount, names, pot.Best)
-			}
-		}
-
-		for _, p := range g.Players {
-			fmt.Printf("  %-8s %5d\n", p.Name, p.Chips)
-		}
+	if err := server.Serve(cfg); err != nil {
+		log.Fatal(err)
 	}
 }
