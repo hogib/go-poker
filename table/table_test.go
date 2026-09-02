@@ -335,21 +335,18 @@ func TestReconnectAfterLeaveKeepsChips(t *testing.T) {
 	defer cancel()
 
 	cfg := testConfig()
-	// A long pause between hands gives the test a window in which no
-	// chips are moving, so the stack it reads is the stack Bob leaves
-	// with.
-	cfg.HandDelay = 3 * time.Second
 	tbl := New(cfg)
 	go tbl.Run(ctx)
 
 	alice, bob := &recorder{}, &recorder{}
-	tbl.Join("key-alice", "Alice", alice.notify)
+	aliceSession := tbl.Join("key-alice", "Alice", alice.notify)
 	bobSession := tbl.Join("key-bob", "Bob", bob.notify)
 
 	playCtx, stopPlay := context.WithCancel(ctx)
 	go autoPlay(playCtx, tbl, "key-alice", alice)
 	go autoPlay(playCtx, tbl, "key-bob", bob)
 
+	// Play a hand so the stacks are no longer the buy-in.
 	deadline := time.After(10 * time.Second)
 	for !bob.sawResult() {
 		select {
@@ -360,38 +357,34 @@ func TestReconnectAfterLeaveKeepsChips(t *testing.T) {
 	}
 	stopPlay()
 
-	view, ok := bob.lastState()
-	if !ok {
-		t.Fatal("Bob never received a snapshot")
-	}
-	before := view.Seats[view.Seat].Chips
-	if before == cfg.BuyIn {
-		t.Skip("the hand left Bob exactly even; nothing to distinguish")
-	}
-
+	// Empty the table before checking anything. With fewer than two
+	// players no hand can start, so nothing moves chips underneath the
+	// assertions -- which is what made an earlier version of this test
+	// flake when a blind happened to land Bob on the buy-in exactly.
+	tbl.Leave(aliceSession)
 	tbl.Leave(bobSession)
 
-	returning := &recorder{}
-	again := tbl.Join("key-bob", "Bob", returning.notify)
-	if again == bobSession {
+	var banked int
+	if !tbl.do(func() { banked = tbl.banked["key-bob"] }, 10*time.Second) {
+		t.Fatal("the table never processed the read")
+	}
+	if banked <= 0 {
+		t.Fatalf("Bob's stack was not banked when he stood: %d", banked)
+	}
+
+	returning := tbl.Join("key-bob", "Bob", (&recorder{}).notify)
+	if returning == bobSession {
 		t.Fatal("a full disconnect should produce a new session")
 	}
-	go autoPlay(ctx, tbl, "key-bob", returning)
 
-	deadline = time.After(10 * time.Second)
-	for {
-		if v, ok := returning.lastState(); ok && v.Seat != game.SpectatorSeat {
-			got := v.Seats[v.Seat].Chips
-			if got == cfg.BuyIn && before != cfg.BuyIn {
-				t.Errorf("Bob left with %d and came back to a fresh buy-in of %d", before, got)
-			}
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("Bob never got a seat back")
-		case <-time.After(5 * time.Millisecond):
-		}
+	var seated int
+	if !tbl.do(func() { seated = returning.Player.Chips }, 10*time.Second) {
+		t.Fatal("the table never seated the returning player")
+	}
+
+	if seated != banked {
+		t.Errorf("Bob banked %d and sat back down with %d (buy-in is %d)",
+			banked, seated, cfg.BuyIn)
 	}
 }
 

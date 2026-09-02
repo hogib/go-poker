@@ -82,11 +82,18 @@ type seatOpKind int
 const (
 	opSit seatOpKind = iota
 	opStand
+	opRun
 )
 
 type seatOp struct {
 	kind    seatOpKind
 	session *Session
+
+	// fn is set for opRun: a closure the Run goroutine executes between
+	// hands. It exists so callers can read table state that only that
+	// goroutine may touch, without a lock that would have to be taken on
+	// every chip movement.
+	fn func()
 }
 
 type turnState struct {
@@ -208,6 +215,29 @@ func (t *Table) Rebuy(sessionID string) bool {
 	return true
 }
 
+// do runs fn on the Run goroutine and waits for it. It is the only safe
+// way to read state the table owns -- chip counts, banked stacks, seat
+// positions -- from anywhere else. It returns false if the table does not
+// get to it before the deadline, which happens while a hand is in
+// progress and someone is on the clock.
+func (t *Table) do(fn func(), within time.Duration) bool {
+	done := make(chan struct{})
+
+	select {
+	case t.seatOps <- seatOp{kind: opRun, fn: func() { fn(); close(done) }}:
+	case <-time.After(within):
+		return false
+	}
+	t.signal()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
 func (t *Table) session(id string) *Session {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -285,6 +315,9 @@ func (t *Table) applySeatOps() {
 				}
 				t.broadcastInfo(fmt.Sprintf("%s sits down with %d.",
 					op.session.Name, op.session.Player.Chips))
+
+			case opRun:
+				op.fn()
 
 			case opStand:
 				// Bank the stack before the seat goes, so a player who
