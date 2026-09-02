@@ -186,7 +186,7 @@ Every package has tests, and they all run clean under `-race`:
 
 | Package | What its tests cover |
 | --- | --- |
-| `deck` | hand ranking, tie-breaks, evaluator purity, best-five-of-seven |
+| `deck` | all nine hand categories ranked against each other, tie-breaks, evaluator purity, best-five-of-seven, dealing and burns |
 | `player` | betting, clamping to the stack, all-in, reset discipline |
 | `game` | blinds, betting rounds, side pots, showdown, the dead button, plus the fuzz gate |
 | `table` | concurrency, redaction, disconnect, reconnect, banking, the lobby |
@@ -202,3 +202,8 @@ the lobby renders and that a keypress reaches the program.
 Fixes are checked against the behaviour they replaced. Reverting the chip
 banking, the dead button ring, the seat-eligibility rule or the refresh on
 publish each makes a specific test fail with a specific message.
+
+Several of the bugs these tests pin were found by running the thing rather
+than by reasoning about it — reconnects handing out a fresh buy-in, a lobby
+stuck on "connecting...", and keystrokes typed during connection setup being
+swallowed. Each has a test now, but none of them had one first.

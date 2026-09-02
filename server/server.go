@@ -11,11 +11,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
 	"github.com/charmbracelet/wish/activeterm"
@@ -126,7 +128,7 @@ func handler(t *table.Table) bm.ProgramHandler {
 	return func(sess ssh.Session) *tea.Program {
 		session, publish := join(t, sess)
 
-		styles := tui.NewStyles(bm.MakeRenderer(sess))
+		styles := tui.NewStyles(newRenderer(sess))
 		model := tui.New(t, session.ID, session.Name, styles)
 
 		opts := append([]tea.ProgramOption{tea.WithAltScreen()}, bm.MakeOptions(sess)...)
@@ -172,6 +174,47 @@ func join(t *table.Table, sess ssh.Session) (*table.Session, func(*tea.Program))
 	}
 
 	return session, publish
+}
+
+// newRenderer builds the lipgloss renderer for a session without asking
+// the terminal anything.
+//
+// wish's MakeRenderer queries the terminal for its background colour and
+// device attributes, and reads the replies off the session's own input.
+// Whatever else the client has already sent is read in the same batch and
+// discarded -- a keypress typed during connection setup, or input ssh had
+// buffered, never reaches the program. The palette here is fixed rather
+// than adaptive, so the background colour was never used; not asking for
+// it keeps those keystrokes.
+func newRenderer(sess ssh.Session) *lipgloss.Renderer {
+	pty, _, ok := sess.Pty()
+	if !ok || pty.Term == "" || pty.Term == "dumb" {
+		return lipgloss.NewRenderer(sess, termenv.WithProfile(termenv.Ascii))
+	}
+
+	env := sshEnviron(append(sess.Environ(), "TERM="+pty.Term))
+
+	return lipgloss.NewRenderer(sess,
+		termenv.WithEnvironment(env),
+		termenv.WithUnsafe(),
+		termenv.WithColorCache(true),
+	)
+}
+
+// sshEnviron lets termenv read the client's environment rather than the
+// server process's, which is what decides the colour profile.
+type sshEnviron []string
+
+func (e sshEnviron) Environ() []string { return e }
+
+func (e sshEnviron) Getenv(key string) string {
+	prefix := key + "="
+	for _, entry := range e {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
 }
 
 // identify returns a stable id for the connecting client. The public key

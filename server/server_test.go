@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -322,19 +321,12 @@ func TestServerServesTheLobbyOverSSH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdout: %v", err)
 	}
-	stdin, err := sess.StdinPipe()
-	if err != nil {
+	if _, err := sess.StdinPipe(); err != nil {
 		t.Fatalf("stdin: %v", err)
 	}
 	if err := sess.Shell(); err != nil {
 		t.Fatalf("starting the shell: %v", err)
 	}
-
-	// Before drawing anything, the renderer asks the terminal for its
-	// background colour and its device attributes, and waits for the
-	// answers. A real terminal replies; this client has to as well, or
-	// the session sits at a blank screen until the query times out.
-	go answerTerminalQueries(stdin)
 
 	// The read has to happen off the test goroutine: an ssh channel read
 	// blocks until bytes arrive, so a deadline checked around it would
@@ -549,8 +541,6 @@ func TestKeystrokesReachTheProgramOverSSH(t *testing.T) {
 		t.Fatalf("starting the shell: %v", err)
 	}
 
-	go answerTerminalQueries(stdin)
-
 	lobbyUp := make(chan struct{})
 	go func() {
 		var seen strings.Builder
@@ -592,17 +582,88 @@ func TestKeystrokesReachTheProgramOverSSH(t *testing.T) {
 	}
 }
 
-// answerTerminalQueries plays the part of a real terminal, which the
-// renderer interrogates before it draws anything.
-func answerTerminalQueries(w io.Writer) {
-	reply := []byte(
-		"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\" + // background colour
-			"\x1b[?1;2c") // primary device attributes
+// Input sent during connection setup must survive.
+//
+// The renderer used to query the terminal for its background colour and
+// read the replies off the session's own input, discarding whatever else
+// arrived in the same batch. A player who typed while connecting -- or
+// whose client sent buffered input -- lost those keystrokes silently.
+func TestKeystrokesDuringConnectionSetupAreNotLost(t *testing.T) {
+	dir := t.TempDir()
 
-	for i := 0; i < 10; i++ {
-		time.Sleep(50 * time.Millisecond)
-		if _, err := w.Write(reply); err != nil {
-			return
+	cfg := Config{
+		Host:        "127.0.0.1",
+		Port:        0,
+		HostKeyPath: filepath.Join(dir, "hostkey"),
+	}.withDefaults()
+
+	tbl := testTable()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tbl.Run(ctx)
+
+	srv, err := newServer(cfg, tbl)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	go srv.Serve(listener)
+	defer srv.Close()
+
+	client := dialAsPlayer(t, listener.Addr().String())
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("opening a session: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.RequestPty("xterm-256color", 40, 100, gossh.TerminalModes{}); err != nil {
+		t.Fatalf("requesting a pty: %v", err)
+	}
+
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout: %v", err)
+	}
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin: %v", err)
+	}
+	if err := sess.Shell(); err != nil {
+		t.Fatalf("starting the shell: %v", err)
+	}
+
+	// Enter goes in immediately, before anything has been drawn. This is
+	// the case a player typing while the session opens produces.
+	if _, err := stdin.Write([]byte("\r")); err != nil {
+		t.Fatalf("writing the keypress: %v", err)
+	}
+
+	// Keep the output window from filling.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := stdout.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(15 * time.Second)
+	for tbl.SeatedCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("a keypress sent during connection setup was swallowed")
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }
