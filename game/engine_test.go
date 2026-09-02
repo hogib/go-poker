@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand"
 	"testing"
+	"time"
 
 	"go_poker/deck"
 	"go_poker/player"
@@ -416,4 +417,172 @@ func TestSidePotEligibilityAwardsTheRightSeats(t *testing.T) {
 	if deep.Chips != 0 {
 		t.Errorf("Deep should win nothing, got %d", deep.Chips)
 	}
+}
+
+// Redaction is a correctness requirement, not hardening: anything in the
+// view reaches the player's terminal.
+func TestViewForLeaksNoHoleCards(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	seat(g, "Alice", 1000)
+	seat(g, "Bob", 1000)
+	seat(g, "Charlie", 1000)
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+
+	view := g.ViewFor(1)
+
+	if len(view.Hole) != 2 {
+		t.Fatalf("expected the viewing seat to see its own two cards, got %d", len(view.Hole))
+	}
+	for i, card := range view.Hole {
+		if card != g.Players[1].Hand.Cards[i] {
+			t.Errorf("seat 1's view shows the wrong hole cards")
+		}
+	}
+	if len(view.Seats) != 3 {
+		t.Fatalf("expected 3 seats in the view, got %d", len(view.Seats))
+	}
+
+	spectator := g.ViewFor(SpectatorSeat)
+	if len(spectator.Hole) != 0 {
+		t.Errorf("a spectator must see no hole cards, got %v", spectator.Hole)
+	}
+	if spectator.Seat != SpectatorSeat {
+		t.Errorf("expected the spectator seat marker, got %d", spectator.Seat)
+	}
+	if len(spectator.Seats) != 3 {
+		t.Errorf("a spectator should still see the public seat state")
+	}
+}
+
+// A player who closes their laptop mid-hand must not hold the table.
+func TestTurnTimeoutFoldsUnresponsiveSeat(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	g.TurnTimeout = 20 * time.Millisecond
+
+	seat(g, "Button", 1000)
+	seat(g, "SB", 1000)
+	absent := seat(g, "Absent", 1000)
+
+	g.Sources[0] = blockingSource{}
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+	// Put the absent player in the big blind's shoes by raising into them.
+	g.Sources[1] = sourceFunc(func(v PlayerView) Decision {
+		return Decision{Action: Raise, Amount: 60}
+	})
+	g.Sources[2] = blockingSource{}
+
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- g.ExecuteBettingRound(g.firstToAct(Preflop)) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ExecuteBettingRound: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the betting round hung on an unresponsive player")
+	}
+
+	// Two absent players means two timeouts. Retries must share one
+	// deadline per turn rather than each getting a fresh one, so anything
+	// near four timeouts means the clock is being reset per attempt.
+	if elapsed := time.Since(started); elapsed > 3*g.TurnTimeout {
+		t.Errorf("two timed-out turns took %v, more than three timeouts; "+
+			"retries are probably getting their own deadline", elapsed)
+	}
+
+	if !g.Players[0].Folded {
+		t.Errorf("an unresponsive player facing a bet should fold")
+	}
+	if !absent.Folded {
+		t.Errorf("the unresponsive big blind should fold to the raise")
+	}
+}
+
+// The deadline is what a UI counts down, so it has to be populated.
+func TestViewCarriesDeadlineWhenTimeoutSet(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	g.TurnTimeout = time.Minute
+	seat(g, "Alice", 1000)
+	seat(g, "Bob", 1000)
+
+	var seen time.Time
+	g.Sources[0] = sourceFunc(func(v PlayerView) Decision {
+		seen = v.Deadline
+		return Decision{Action: Fold}
+	})
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+	if err := g.ExecuteBettingRound(g.firstToAct(Preflop)); err != nil {
+		t.Fatalf("ExecuteBettingRound: %v", err)
+	}
+
+	if seen.IsZero() {
+		t.Fatal("expected the view to carry a turn deadline")
+	}
+	if time.Until(seen) <= 0 {
+		t.Errorf("the deadline should be in the future, got %v", seen)
+	}
+}
+
+// A source that burns the clock and then answers illegally is the only
+// thing that distinguishes one deadline per turn from one per attempt:
+// under a per-attempt clock its four retries cost four full timeouts.
+func TestTurnDeadlineCoversRetries(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	g.TurnTimeout = 50 * time.Millisecond
+
+	seat(g, "Alice", 1000)
+	seat(g, "Bob", 1000)
+	g.ButtonIndex = 0
+
+	// Checking is illegal for the small blind facing the big blind.
+	g.Sources[0] = stallingIllegalSource{}
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+
+	started := time.Now()
+	if err := g.ExecuteBettingRound(g.firstToAct(Preflop)); err != nil {
+		t.Fatalf("ExecuteBettingRound: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	if !g.Players[0].Folded {
+		t.Errorf("a seat that never answers legally should be folded")
+	}
+	if elapsed > 2*g.TurnTimeout {
+		t.Errorf("one turn took %v, over two timeouts; retries are getting "+
+			"their own deadline instead of sharing the turn's", elapsed)
+	}
+}
+
+type stallingIllegalSource struct{}
+
+func (stallingIllegalSource) RequestAction(ctx context.Context, _ PlayerView) (Decision, error) {
+	<-ctx.Done()
+	// Deliberately answers with nil error so the engine takes the retry
+	// path rather than the give-up path.
+	return Decision{Action: Check}, nil
+}
+
+type blockingSource struct{}
+
+func (blockingSource) RequestAction(ctx context.Context, _ PlayerView) (Decision, error) {
+	<-ctx.Done()
+	return Decision{}, ctx.Err()
 }

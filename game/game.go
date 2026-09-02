@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go_poker/deck"
 	"go_poker/player"
@@ -12,6 +13,11 @@ import (
 // decision before the engine acts for them. A buggy bot must not be able
 // to stall the table, and a human on a flaky connection shouldn't either.
 const maxIllegalActions = 3
+
+// SpectatorSeat is the seat index for anyone not in the hand: a railbird,
+// or a player waiting to be dealt in. ViewFor gives it the public state
+// with no hole cards.
+const SpectatorSeat = -1
 
 type Game struct {
 	// Players and Sources are parallel slices: Sources[i] answers for
@@ -34,11 +40,48 @@ type Game struct {
 	ButtonIndex int
 	Street      Street
 
+	// ActingSeat is whose decision the table is waiting on, or
+	// SpectatorSeat when no one is being asked.
+	ActingSeat int
+
 	// CurrentBet is the amount each player must have in for the street.
 	// MinRaise is the size of the last full raise, so the smallest legal
 	// raise is to CurrentBet + MinRaise.
 	CurrentBet int
 	MinRaise   int
+
+	// TurnTimeout bounds how long a source has to answer. Zero means no
+	// limit, which is fine for bots and tests but not for a table with a
+	// human who can close their laptop mid-hand.
+	TurnTimeout time.Duration
+
+	// Watch, if set, is notified whenever the table state changes so a UI
+	// can redraw. It is called synchronously from whichever goroutine is
+	// driving the hand, so implementations must not block.
+	Watch Watcher
+}
+
+// Watcher observes a hand as it plays out. The engine hands it the whole
+// Game; redaction happens in ViewFor, which is what any implementation
+// should use to build what it sends to a given seat.
+type Watcher interface {
+	TableChanged(g *Game)
+	HandFinished(g *Game, r HandResult)
+}
+
+// turnContext bounds one source's answer. A human who walks away must not
+// hold the table, and a bot that hangs must not either.
+func (g *Game) turnContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if g.TurnTimeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, g.TurnTimeout)
+}
+
+func (g *Game) notifyChanged() {
+	if g.Watch != nil {
+		g.Watch.TableChanged(g)
+	}
 }
 
 func NewGame(sb, bb int) Game {
@@ -48,6 +91,7 @@ func NewGame(sb, bb int) Game {
 		SmallBlind:  sb,
 		BigBlind:    bb,
 		ButtonIndex: 0,
+		ActingSeat:  SpectatorSeat,
 	}
 }
 
@@ -99,6 +143,38 @@ func (g *Game) RemoveBustedPlayers() {
 		return
 	}
 	g.ButtonIndex = newButton % len(g.Players)
+}
+
+// RemovePlayer drops one seat from the table. Callers hold a
+// *player.Player rather than a seat index because indices shift when
+// anyone leaves, and a stale index silently addresses the wrong seat.
+func (g *Game) RemovePlayer(target *player.Player) bool {
+	for i, p := range g.Players {
+		if p != target {
+			continue
+		}
+		g.Players = append(g.Players[:i], g.Players[i+1:]...)
+		g.Sources = append(g.Sources[:i], g.Sources[i+1:]...)
+
+		if len(g.Players) == 0 {
+			g.ButtonIndex = 0
+		} else if g.ButtonIndex >= len(g.Players) {
+			g.ButtonIndex = 0
+		}
+		return true
+	}
+	return false
+}
+
+// SeatOf reports where a player is sitting, or SpectatorSeat if they are
+// not at the table.
+func (g *Game) SeatOf(target *player.Player) int {
+	for i, p := range g.Players {
+		if p == target {
+			return i
+		}
+	}
+	return SpectatorSeat
 }
 
 func (g *Game) getBlindIndices() (int, int) {
@@ -208,10 +284,17 @@ func (g *Game) canActCount() int {
 	return n
 }
 
-// viewFor builds the redacted snapshot for one seat. Only that seat's hole
-// cards go in.
-func (g *Game) viewFor(seat int) PlayerView {
-	p := g.Players[seat]
+// ViewFor builds the redacted snapshot for one seat. Only that seat's hole
+// cards go in, which is what makes it safe to send over the wire.
+//
+// A seat outside the table -- use SpectatorSeat -- gets the same public
+// state with no hole cards and no betting figures, which is what a
+// railbird or a player waiting for the next hand sees.
+func (g *Game) ViewFor(seat int) PlayerView {
+	var p *player.Player
+	if seat >= 0 && seat < len(g.Players) {
+		p = g.Players[seat]
+	}
 
 	seats := make([]SeatInfo, 0, len(g.Players))
 	for i, q := range g.Players {
@@ -227,23 +310,32 @@ func (g *Game) viewFor(seat int) PlayerView {
 		})
 	}
 
+	view := PlayerView{
+		Seat:       SpectatorSeat,
+		Board:      append([]deck.Card(nil), g.Board.Cards...),
+		Seats:      seats,
+		Street:     g.Street,
+		Acting:     g.ActingSeat,
+		Pot:        g.Pot,
+		CurrentBet: g.CurrentBet,
+	}
+
+	if p == nil {
+		return view
+	}
+
 	toCall := g.CurrentBet - p.CurrentBet
 	if toCall > p.Chips {
 		toCall = p.Chips
 	}
 
-	return PlayerView{
-		Seat:       seat,
-		Hole:       append([]deck.Card(nil), p.Hand.Cards...),
-		Board:      append([]deck.Card(nil), g.Board.Cards...),
-		Seats:      seats,
-		Street:     g.Street,
-		Pot:        g.Pot,
-		CurrentBet: g.CurrentBet,
-		ToCall:     toCall,
-		MinRaiseTo: g.CurrentBet + g.MinRaise,
-		MaxRaiseTo: p.CurrentBet + p.Chips,
-	}
+	view.Seat = seat
+	view.Hole = append([]deck.Card(nil), p.Hand.Cards...)
+	view.ToCall = toCall
+	view.MinRaiseTo = g.CurrentBet + g.MinRaise
+	view.MaxRaiseTo = p.CurrentBet + p.Chips
+
+	return view
 }
 
 // ExecuteBettingRound runs one street of betting, starting at startIndex
@@ -302,6 +394,7 @@ func (g *Game) ExecuteBettingRound(startIndex int) error {
 		}
 
 		needsToAct[currentIndex] = false
+		g.notifyChanged()
 
 		if raised {
 			// A full raise reopens the betting for everyone else.
@@ -321,19 +414,37 @@ func (g *Game) ExecuteBettingRound(startIndex int) error {
 // is what reopens the betting.
 func (g *Game) resolveTurn(ctx context.Context, seat int) (bool, error) {
 	p := g.Players[seat]
-	view := g.viewFor(seat)
+	view := g.ViewFor(seat)
+
+	if g.TurnTimeout > 0 {
+		view.Deadline = time.Now().Add(g.TurnTimeout)
+	}
+
+	// The turn is announced before the source is asked, so every other
+	// seat can see whose decision the table is waiting on.
+	g.ActingSeat = seat
+	g.notifyChanged()
+	defer func() {
+		g.ActingSeat = SpectatorSeat
+	}()
+
+	// One deadline covers the whole turn, retries included. That is what a
+	// poker clock means, and it stops a source that spams illegal actions
+	// from buying itself several times the allotted think time.
+	turnCtx, cancel := g.turnContext(ctx)
+	defer cancel()
 
 	var decision Decision
 
 	for attempt := 0; ; attempt++ {
-		d, err := g.Sources[seat].RequestAction(ctx, view)
+		d, err := g.Sources[seat].RequestAction(turnCtx, view)
 		if err != nil {
 			// A source that cannot answer -- a disconnected session, a
 			// blown deadline -- gives up its turn the cheapest legal way.
 			decision = defaultDecision(view)
 			break
 		}
-		if legalErr := validate(view, d); legalErr == nil {
+		if legalErr := validate(view, d); legalErr == nil { //nolint
 			decision = d
 			break
 		}
@@ -452,6 +563,7 @@ func (g *Game) PlayHand() (HandResult, error) {
 	if err := g.StartNewHand(); err != nil {
 		return HandResult{}, err
 	}
+	g.notifyChanged()
 
 	for _, street := range []Street{Preflop, Flop, Turn, River} {
 		g.Street = street
@@ -468,6 +580,7 @@ func (g *Game) PlayHand() (HandResult, error) {
 			}
 			g.CurrentBet = 0
 			g.MinRaise = g.BigBlind
+			g.notifyChanged()
 		}
 
 		if g.contestingCount() <= 1 {
@@ -483,6 +596,10 @@ func (g *Game) PlayHand() (HandResult, error) {
 
 	result := g.Payout()
 	g.MoveButton()
+
+	if g.Watch != nil {
+		g.Watch.HandFinished(g, result)
+	}
 
 	return result, nil
 }

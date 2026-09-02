@@ -79,7 +79,12 @@ type PlayerView struct {
 	Board []deck.Card
 	Seats []SeatInfo
 
-	Street     Street
+	Street Street
+
+	// Acting is the seat the table is waiting on, or SpectatorSeat when
+	// no decision is pending.
+	Acting int
+
 	Pot        int
 	CurrentBet int
 	ToCall     int
