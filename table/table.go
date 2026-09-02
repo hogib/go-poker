@@ -79,6 +79,12 @@ type Table struct {
 	// only one that touches Player.Chips.
 	banked map[string]int
 
+	// bankedNames does the same for the name a player chose, so a
+	// reconnect gets back what they were called as well as what they
+	// were holding. Guarded by mu, since a name can be read from any
+	// goroutine.
+	bankedNames map[string]string
+
 	seatOps chan seatOp
 	wake    chan struct{}
 
@@ -122,13 +128,14 @@ func New(cfg Config) *Table {
 	g.TurnTimeout = cfg.TurnTimeout
 
 	t := &Table{
-		cfg:      cfg,
-		game:     &g,
-		sessions: make(map[string]*Session),
-		lastView: make(map[string]game.PlayerView),
-		banked:   make(map[string]int),
-		seatOps:  make(chan seatOp, 32),
-		wake:     make(chan struct{}, 1),
+		cfg:         cfg,
+		game:        &g,
+		sessions:    make(map[string]*Session),
+		lastView:    make(map[string]game.PlayerView),
+		banked:      make(map[string]int),
+		bankedNames: make(map[string]string),
+		seatOps:     make(chan seatOp, 32),
+		wake:        make(chan struct{}, 1),
 	}
 
 	g.Watch = t
@@ -159,6 +166,14 @@ func (t *Table) Join(id, name string, notify func(any)) *Session {
 		}
 		existing.send(lobby)
 		return existing
+	}
+
+	// A returning player gets the name they chose, unless somebody has
+	// taken it in the meantime -- in which case they are numbered like
+	// anyone else.
+	if chosen, ok := t.bankedNames[id]; ok {
+		delete(t.bankedNames, id)
+		name = chosen
 	}
 
 	// The stack is left at zero here and filled in by the Run goroutine
@@ -424,6 +439,9 @@ func (t *Table) Leave(s *Session) {
 	if t.sessions[s.ID] == s {
 		delete(t.sessions, s.ID)
 		delete(t.lastView, s.ID)
+		// The stack is banked by the Run goroutine when the seat goes;
+		// the name is banked here, where it is already guarded.
+		t.bankedNames[s.ID] = s.Name()
 	}
 	t.mu.Unlock()
 

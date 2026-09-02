@@ -139,7 +139,9 @@ entries rather than wrapping.
 
 Disconnecting mid-hand folds you immediately rather than holding everyone
 else for the rest of the clock. Reconnect with the same SSH key and you get
-your seat and your stack back. Standing up banks your chips the same way, so
+your name, your seat and your stack back — unless somebody claimed the name
+while you were away, in which case you are numbered like anyone else rather
+than there being two of you. Standing up banks your chips the same way, so
 you can drop to the rail and sit back down with what you had.
 
 ## The dead button

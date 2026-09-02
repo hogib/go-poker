@@ -751,13 +751,16 @@ func TestTableViewRendersOverSSH(t *testing.T) {
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("the table never rendered a pot over ssh; last screen:\n%s", lastScreen)
+			t.Fatalf("the oval table never rendered over ssh; last screen:\n%s", lastScreen)
 		case screen := <-screens[0]:
 			lastScreen = screen
-			// The felt puts the pot in the middle of the table, well
-			// clear of the left margin the compact list uses.
+			// The compact list also prints the pot well clear of the
+			// left margin, so that alone proves nothing. The list draws
+			// one box flush against the app padding; the oval indents
+			// its board and its seat boxes to make room for the seats
+			// beside them. An indented box corner is the discriminator.
 			for _, line := range strings.Split(screen, "\n") {
-				if i := strings.Index(line, "pot "); i > 20 {
+				if i := strings.Index(line, "╭"); i > 10 {
 					return
 				}
 			}

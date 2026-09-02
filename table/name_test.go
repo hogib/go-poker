@@ -408,3 +408,95 @@ func TestJoinWithNoNameHandsOutAHandle(t *testing.T) {
 		t.Errorf("expected the handle for this session, got %q", s.Name())
 	}
 }
+
+// Chips survive a disconnect, so the name a player chose should too.
+func TestReconnectGetsTheChosenNameBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	s := tbl.Join("key-alice", "", (&recorder{}).notify)
+	if _, err := tbl.Rename("key-alice", "Ace"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	tbl.Leave(s)
+
+	again := tbl.Join("key-alice", "", (&recorder{}).notify)
+	if again.Name() != "Ace" {
+		t.Errorf("a reconnect should come back as Ace, got %q", again.Name())
+	}
+}
+
+// Unless somebody took it while they were away, in which case they are
+// numbered like anyone else rather than duplicating a name at the table.
+func TestAChosenNameTakenWhileAwayIsNotHandedBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	alice := tbl.Join("key-alice", "", (&recorder{}).notify)
+	if _, err := tbl.Rename("key-alice", "Ace"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	tbl.Leave(alice)
+
+	// Somebody else claims it in the meantime.
+	bob := tbl.Join("key-bob", "", (&recorder{}).notify)
+	if _, err := tbl.Rename("key-bob", "Ace"); err != nil {
+		t.Fatalf("the freed name should be available: %v", err)
+	}
+
+	again := tbl.Join("key-alice", "", (&recorder{}).notify)
+
+	if again.Name() == bob.Name() {
+		t.Fatalf("two players are both called %q", again.Name())
+	}
+	if again.Name() == "" {
+		t.Error("the returning player still needs a name")
+	}
+
+	// And they can confirm whatever they were given.
+	if _, err := tbl.Rename("key-alice", again.Name()); err != nil {
+		t.Errorf("could not confirm the name handed out on reconnect: %v", err)
+	}
+}
+
+// The whole reconnect story in one: same key, same name, same chips.
+func TestReconnectKeepsNameAndStackTogether(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	s := tbl.Join("key-alice", "", (&recorder{}).notify)
+	if _, err := tbl.Rename("key-alice", "Ace"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	tbl.Sit("key-alice")
+	waitUntil(t, "a seat", 5*time.Second, func() bool { return tbl.SeatedCount() == 1 })
+	tbl.do(func() { s.Player.Chips = 777 }, 5*time.Second)
+
+	tbl.Leave(s)
+	tbl.do(func() {}, 5*time.Second) // let the stand be applied
+
+	again := tbl.Join("key-alice", "", (&recorder{}).notify)
+	tbl.Sit("key-alice")
+	waitUntil(t, "the seat back", 5*time.Second, func() bool { return tbl.SeatedCount() == 1 })
+
+	var chips int
+	tbl.do(func() { chips = again.Player.Chips }, 5*time.Second)
+
+	if again.Name() != "Ace" {
+		t.Errorf("expected to come back as Ace, got %q", again.Name())
+	}
+	if chips != 777 {
+		t.Errorf("expected the banked 777 chips, got %d", chips)
+	}
+}
