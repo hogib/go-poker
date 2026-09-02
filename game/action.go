@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"go_poker/deck"
+	"ssh_holdem/deck"
 )
 
 type Action string

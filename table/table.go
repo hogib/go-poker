@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"go_poker/game"
+	"ssh_holdem/game"
 )
 
 var errSessionGone = errors.New("session disconnected")

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"go_poker/deck"
-	"go_poker/game"
-	"go_poker/table"
+	"ssh_holdem/deck"
+	"ssh_holdem/game"
+	"ssh_holdem/table"
 )
 
 // tickMsg drives the shot-clock countdown.

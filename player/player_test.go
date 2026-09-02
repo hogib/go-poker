@@ -1,7 +1,7 @@
 package player
 
 import (
-	"go_poker/deck"
+	"ssh_holdem/deck"
 	"testing"
 )
 

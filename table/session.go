@@ -6,8 +6,8 @@ package table
 import (
 	"sync"
 
-	"go_poker/game"
-	"go_poker/player"
+	"ssh_holdem/game"
+	"ssh_holdem/player"
 )
 
 // outboxDepth is how many undelivered messages a session may queue before

@@ -1,4 +1,4 @@
-module go_poker
+module ssh_holdem
 
 go 1.26.5
 

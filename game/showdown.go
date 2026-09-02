@@ -1,7 +1,7 @@
 package game
 
 import (
-	"go_poker/deck"
+	"ssh_holdem/deck"
 )
 
 // PotResult records how one pot layer was settled.

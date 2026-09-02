@@ -1,7 +1,7 @@
 package game
 
 import (
-	"go_poker/player"
+	"ssh_holdem/player"
 	"testing"
 )
 

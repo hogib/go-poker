@@ -2,7 +2,7 @@ package player
 
 import (
 	"fmt"
-	"go_poker/deck"
+	"ssh_holdem/deck"
 )
 
 type Player struct {

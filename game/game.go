@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"go_poker/deck"
-	"go_poker/player"
+	"ssh_holdem/deck"
+	"ssh_holdem/player"
 )
 
 // maxIllegalActions caps how many times one seat may return an illegal

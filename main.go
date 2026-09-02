@@ -5,15 +5,15 @@ import (
 	"log"
 	"time"
 
-	"go_poker/server"
-	"go_poker/table"
+	"ssh_holdem/server"
+	"ssh_holdem/table"
 )
 
 func main() {
 	var (
 		host        = flag.String("host", "0.0.0.0", "address to listen on")
 		port        = flag.Int("port", 2222, "port to listen on")
-		hostKey     = flag.String("host-key", ".ssh/go_poker_ed25519", "path to the server's ssh host key; generated if absent")
+		hostKey     = flag.String("host-key", ".ssh/ssh_holdem_ed25519", "path to the server's ssh host key; generated if absent")
 		smallBlind  = flag.Int("small-blind", 10, "small blind")
 		bigBlind    = flag.Int("big-blind", 20, "big blind")
 		buyIn       = flag.Int("buy-in", 2000, "starting stack")

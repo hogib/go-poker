@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"go_poker/game"
+	"ssh_holdem/game"
 )
 
 // Styles are built per session, because the colour profile depends on the
@@ -52,7 +52,7 @@ func NewStyles(r *lipgloss.Renderer) Styles {
 func (m Model) View() string {
 	var b strings.Builder
 
-	b.WriteString(m.styles.Title.Render("go-poker") + "\n\n")
+	b.WriteString(m.styles.Title.Render("ssh-holdem") + "\n\n")
 
 	if !m.hasView {
 		b.WriteString(m.styles.Status.Render(m.status) + "\n")

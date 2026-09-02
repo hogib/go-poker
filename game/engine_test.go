@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"go_poker/deck"
-	"go_poker/player"
+	"ssh_holdem/deck"
+	"ssh_holdem/player"
 )
 
 func seat(g *Game, name string, chips int) *player.Player {

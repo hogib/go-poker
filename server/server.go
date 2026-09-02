@@ -23,8 +23,8 @@ import (
 	"github.com/charmbracelet/wish/logging"
 	"github.com/muesli/termenv"
 
-	"go_poker/table"
-	"go_poker/tui"
+	"ssh_holdem/table"
+	"ssh_holdem/tui"
 )
 
 // Config is everything the listener needs. Table rules come from
@@ -44,7 +44,7 @@ func (c Config) withDefaults() Config {
 		c.Port = 2222
 	}
 	if c.HostKeyPath == "" {
-		c.HostKeyPath = ".ssh/go_poker_ed25519"
+		c.HostKeyPath = ".ssh/ssh_holdem_ed25519"
 	}
 	return c
 }

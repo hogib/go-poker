@@ -1,4 +1,4 @@
-# go-poker
+# ssh-holdem
 
 Texas hold'em over SSH. Run the server, and anyone with an SSH client has a
 seat — no install, no account, no client to build.
@@ -10,8 +10,8 @@ ssh -p 2222 yourname@your-host
 ## Running it
 
 ```sh
-go build -o go-poker .
-./go-poker
+go build -o ssh-holdem .
+./ssh-holdem
 ```
 
 The server generates its own host key on first run and prints the address to
@@ -20,11 +20,11 @@ stable identity, which is what lets a player keep their seat and their chips
 across a dropped connection.
 
 ```
-Usage of ./go-poker:
+Usage of ./ssh-holdem:
   -host string          address to listen on (default "0.0.0.0")
   -port int             port to listen on (default 2222)
   -host-key string      path to the server's ssh host key, generated if absent
-                        (default ".ssh/go_poker_ed25519")
+                        (default ".ssh/ssh_holdem_ed25519")
   -small-blind int      small blind (default 10)
   -big-blind int        big blind (default 20)
   -buy-in int           starting stack (default 2000)

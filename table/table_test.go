@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"go_poker/game"
+	"ssh_holdem/game"
 )
 
 // recorder stands in for a terminal: it captures everything pushed to a
