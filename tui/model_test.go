@@ -15,11 +15,14 @@ import (
 // fakeController records what the model asked the table to do, which is
 // the whole observable effect of a keypress.
 type fakeController struct {
-	acts   []game.Decision
-	sits   int
-	stands int
+	acts    []game.Decision
+	sits    int
+	stands  int
+	renames []string
 
-	acceptAct bool
+	acceptAct  bool
+	renameErr  error
+	renameFrom func(string) string
 }
 
 func newController() *fakeController { return &fakeController{acceptAct: true} }
@@ -31,6 +34,17 @@ func (c *fakeController) Act(_ string, d game.Decision) bool {
 func (c *fakeController) Sit(string) bool   { c.sits++; return true }
 func (c *fakeController) Stand(string) bool { c.stands++; return true }
 
+func (c *fakeController) Rename(_, name string) (string, error) {
+	c.renames = append(c.renames, name)
+	if c.renameErr != nil {
+		return "", c.renameErr
+	}
+	if c.renameFrom != nil {
+		return c.renameFrom(name), nil
+	}
+	return name, nil
+}
+
 func (c *fakeController) lastAct(t *testing.T) game.Decision {
 	t.Helper()
 	if len(c.acts) == 0 {
@@ -39,10 +53,20 @@ func (c *fakeController) lastAct(t *testing.T) game.Decision {
 	return c.acts[len(c.acts)-1]
 }
 
-// newModel builds a model with a fake table behind it.
+// newModel builds a model sitting on the name screen, which is where a
+// connection starts.
 func newModel() (Model, *fakeController) {
 	c := newController()
 	return New(c, "session-1", "Alice", NewStyles(nil)), c
+}
+
+// atMenu is newModel with the name already accepted, which is the state
+// most of these tests care about.
+func atMenu() (Model, *fakeController) {
+	m, c := newModel()
+	m = press(m, "enter")
+	c.renames = nil
+	return m, c
 }
 
 // press feeds one keypress and returns the model that came back.
@@ -123,7 +147,7 @@ func seatedView(toCall int) game.PlayerView {
 func onClock(t *testing.T, toCall int) (Model, *fakeController) {
 	t.Helper()
 
-	m, c := newModel()
+	m, c := atMenu()
 	m = send(m, lobby(2, 0, true))
 	m = send(m, table.TurnMsg{View: seatedView(toCall)})
 
@@ -135,11 +159,31 @@ func onClock(t *testing.T, toCall int) (Model, *fakeController) {
 
 // ---- lobby ----------------------------------------------------------
 
-func TestStartsOnTheMenu(t *testing.T) {
+func TestStartsOnTheNamePrompt(t *testing.T) {
 	m, _ := newModel()
 
+	if m.screen != screenName {
+		t.Errorf("a new session should be asked its name first, got %v", m.screen)
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "What should we call you?") {
+		t.Errorf("the name prompt should be shown:\n%s", out)
+	}
+	if !strings.Contains(out, "Alice") {
+		t.Errorf("the field should be prefilled with the ssh username:\n%s", out)
+	}
+}
+
+func TestConfirmingTheNameOpensTheMenu(t *testing.T) {
+	m, c := newModel()
+	m = press(m, "enter")
+
 	if m.screen != screenMenu {
-		t.Errorf("a new session should land on the menu, got %v", m.screen)
+		t.Errorf("confirming a name should open the menu, got %v", m.screen)
+	}
+	if len(c.renames) != 1 || c.renames[0] != "Alice" {
+		t.Errorf("expected the prefilled name to be sent, got %v", c.renames)
 	}
 	if !strings.Contains(m.View(), "Take a seat") {
 		t.Errorf("the menu should offer a seat:\n%s", m.View())
@@ -147,7 +191,7 @@ func TestStartsOnTheMenu(t *testing.T) {
 }
 
 func TestMenuShowsTheHouseRules(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(3, 2, false))
 
 	out := m.View()
@@ -159,7 +203,7 @@ func TestMenuShowsTheHouseRules(t *testing.T) {
 }
 
 func TestTakeASeatAsksTheTableAndOpensTheFelt(t *testing.T) {
-	m, c := newModel()
+	m, c := atMenu()
 	m = send(m, lobby(1, 1, false))
 
 	m = press(m, "enter") // "Take a seat" is the first item
@@ -173,7 +217,7 @@ func TestTakeASeatAsksTheTableAndOpensTheFelt(t *testing.T) {
 }
 
 func TestAlreadySeatedGoesStraightToTheFelt(t *testing.T) {
-	m, c := newModel()
+	m, c := atMenu()
 	m = send(m, lobby(2, 0, true))
 
 	if got := m.menu()[0].label(m); got != "Back to the table" {
@@ -191,7 +235,7 @@ func TestAlreadySeatedGoesStraightToTheFelt(t *testing.T) {
 }
 
 func TestLeaveYourSeatIsOnlyOfferedWhenSeated(t *testing.T) {
-	m, c := newModel()
+	m, c := atMenu()
 	m = send(m, lobby(1, 1, false))
 
 	stand := m.menu()[1]
@@ -219,7 +263,7 @@ func TestLeaveYourSeatIsOnlyOfferedWhenSeated(t *testing.T) {
 }
 
 func TestFullTableDisablesTakingASeat(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(maxSeats, 3, false))
 
 	seat := m.menu()[0]
@@ -232,7 +276,7 @@ func TestFullTableDisablesTakingASeat(t *testing.T) {
 }
 
 func TestMenuNavigationWraps(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(2, 0, true)) // everything enabled
 
 	items := m.menu()
@@ -260,7 +304,7 @@ func TestRulesAndHelpScreensReturnToTheMenu(t *testing.T) {
 		{"rules", screenRules, "Shot clock"},
 		{"help", screenHelp, "How to play"},
 	} {
-		m, _ := newModel()
+		m, _ := atMenu()
 		m = send(m, lobby(2, 0, true))
 
 		for i, item := range m.menu() {
@@ -282,7 +326,7 @@ func TestRulesAndHelpScreensReturnToTheMenu(t *testing.T) {
 }
 
 func TestRulesScreenShowsTheConfiguredValues(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(2, 0, true))
 	m.screen = screenRules
 
@@ -471,7 +515,7 @@ func TestEscReturnsToTheMenuFromTheFelt(t *testing.T) {
 // Being put on the clock while reading the rules pulls you back, so
 // nobody times out on a help screen.
 func TestBeingPutOnTheClockInterruptsAnyScreen(t *testing.T) {
-	for _, from := range []screen{screenMenu, screenRules, screenHelp} {
+	for _, from := range []screen{screenName, screenMenu, screenRules, screenHelp} {
 		m, _ := newModel()
 		m.screen = from
 
@@ -532,7 +576,7 @@ func TestFeltShowsOnlyYourOwnHoleCards(t *testing.T) {
 }
 
 func TestSpectatorSeesNoHoleCards(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(2, 1, false))
 
 	view := seatedView(0)
@@ -552,7 +596,7 @@ func TestSpectatorSeesNoHoleCards(t *testing.T) {
 }
 
 func TestClockCountsDownAndTurnsUrgent(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	m = send(m, lobby(2, 0, true))
 
 	view := seatedView(20)
@@ -621,7 +665,7 @@ func TestUncontestedResultDoesNotClaimAWinningHand(t *testing.T) {
 }
 
 func TestLogKeepsOnlyTheRecentLines(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 
 	for i := 0; i < logLines+5; i++ {
 		m = send(m, table.InfoMsg{Text: strings.Repeat("x", i+1)})
@@ -638,7 +682,7 @@ func TestLogKeepsOnlyTheRecentLines(t *testing.T) {
 func TestViewNeverPanicsBeforeAnyStateArrives(t *testing.T) {
 	m, _ := newModel()
 
-	for _, s := range []screen{screenMenu, screenTable, screenRules, screenHelp} {
+	for _, s := range []screen{screenName, screenMenu, screenTable, screenRules, screenHelp} {
 		m.screen = s
 		if out := m.View(); out == "" {
 			t.Errorf("screen %v rendered nothing", s)
@@ -647,7 +691,7 @@ func TestViewNeverPanicsBeforeAnyStateArrives(t *testing.T) {
 }
 
 func TestQuitFromEitherScreen(t *testing.T) {
-	m, _ := newModel()
+	m, _ := atMenu()
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
 		t.Error("q should quit from the menu")
 	}

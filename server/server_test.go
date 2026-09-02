@@ -173,8 +173,8 @@ func TestJoinRegistersTheSessionUnderItsKeyIdentity(t *testing.T) {
 	if publish == nil {
 		t.Fatal("join returned no way to publish the program")
 	}
-	if session.Name != "alice" {
-		t.Errorf("expected the ssh username at the table, got %q", session.Name)
+	if session.Name() != "alice" {
+		t.Errorf("expected the ssh username at the table, got %q", session.Name())
 	}
 	if got := tbl.Session(identify(sess)); got != session {
 		t.Error("the session should be registered under its key identity")
@@ -344,7 +344,7 @@ func TestServerServesTheLobbyOverSSH(t *testing.T) {
 			if n > 0 {
 				mu.Lock()
 				seen.Write(buf[:n])
-				done := strings.Contains(stripANSI(seen.String()), "Take a seat")
+				done := strings.Contains(stripANSI(seen.String()), "What should we call you?")
 				mu.Unlock()
 
 				if done {
@@ -365,7 +365,7 @@ func TestServerServesTheLobbyOverSSH(t *testing.T) {
 		mu.Lock()
 		got := stripANSI(seen.String())
 		mu.Unlock()
-		t.Fatalf("the lobby never rendered over ssh; saw %d bytes:\n%s", len(got), got)
+		t.Fatalf("the name prompt never rendered over ssh; saw %d bytes:\n%s", len(got), got)
 	}
 }
 
@@ -550,7 +550,7 @@ func TestKeystrokesReachTheProgramOverSSH(t *testing.T) {
 			n, err := stdout.Read(buf)
 			if n > 0 && !done {
 				seen.Write(buf[:n])
-				if strings.Contains(stripANSI(seen.String()), "Take a seat") {
+				if strings.Contains(stripANSI(seen.String()), "What should we call you?") {
 					done = true
 					close(lobbyUp)
 				}
@@ -564,10 +564,15 @@ func TestKeystrokesReachTheProgramOverSSH(t *testing.T) {
 	select {
 	case <-lobbyUp:
 	case <-time.After(15 * time.Second):
-		t.Fatal("the lobby never rendered")
+		t.Fatal("the name prompt never rendered")
 	}
 
-	// Enter on the first menu item takes a seat.
+	// The first enter accepts the prefilled name; the second takes the
+	// seat the menu opens on.
+	if _, err := stdin.Write([]byte("\r")); err != nil {
+		t.Fatalf("writing the keypress: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
 	if _, err := stdin.Write([]byte("\r")); err != nil {
 		t.Fatalf("writing the keypress: %v", err)
 	}
@@ -576,7 +581,7 @@ func TestKeystrokesReachTheProgramOverSSH(t *testing.T) {
 	for tbl.SeatedCount() == 0 {
 		select {
 		case <-deadline:
-			t.Fatal(`pressing enter on "Take a seat" did not seat the player`)
+			t.Fatal(`pressing enter on "What should we call you?" did not seat the player`)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -642,10 +647,11 @@ func TestKeystrokesDuringConnectionSetupAreNotLost(t *testing.T) {
 		t.Fatalf("starting the shell: %v", err)
 	}
 
-	// Enter goes in immediately, before anything has been drawn. This is
-	// the case a player typing while the session opens produces.
-	if _, err := stdin.Write([]byte("\r")); err != nil {
-		t.Fatalf("writing the keypress: %v", err)
+	// Both keypresses go in immediately, before anything has been drawn:
+	// the first accepts the prefilled name, the second takes a seat. If
+	// either is swallowed, no seat is taken.
+	if _, err := stdin.Write([]byte("\r\r")); err != nil {
+		t.Fatalf("writing the keypresses: %v", err)
 	}
 
 	// Keep the output window from filling.
@@ -665,5 +671,26 @@ func TestKeystrokesDuringConnectionSetupAreNotLost(t *testing.T) {
 			t.Fatal("a keypress sent during connection setup was swallowed")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+// The name screen is prefilled from the ssh username on a first
+// connection, and from the name the player chose on a reconnect.
+func TestReconnectPrefillsTheChosenName(t *testing.T) {
+	tbl := testTable()
+	key := testKey(t)
+
+	first, _ := join(tbl, fakeSession{user: "alice", key: key, addr: fakeAddr("10.0.0.1:1")})
+	if first.Name() != "alice" {
+		t.Fatalf("a first connection should use the ssh username, got %q", first.Name())
+	}
+
+	if _, err := tbl.Rename(first.ID, "Ace"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	again, _ := join(tbl, fakeSession{user: "alice", key: key, addr: fakeAddr("10.0.0.2:2")})
+	if again.Name() != "Ace" {
+		t.Errorf("a reconnect should keep the chosen name, got %q", again.Name())
 	}
 }

@@ -95,7 +95,12 @@ type PlayerView struct {
 	MinRaiseTo int
 	MaxRaiseTo int
 
-	Deadline time.Time
+	// Deadline is when the seat on the clock runs out, and TurnLength is
+	// how long they had. Both are the same for every viewer: the clock
+	// belongs to the table, not to the player watching it, which is what
+	// lets everyone see it tick down.
+	Deadline   time.Time
+	TurnLength time.Duration
 }
 
 // Legal reports whether an action is available in this spot, so a UI can

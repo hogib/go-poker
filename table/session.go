@@ -18,13 +18,15 @@ const outboxDepth = 8
 // Session is one connected player. The exported fields are read-only once
 // the session is created.
 type Session struct {
-	ID   string // stable across reconnects; the SSH key fingerprint
-	Name string
+	ID string // stable across reconnects; the SSH key fingerprint
 
 	// Player is the seat's chip stack, and is the table's handle on it.
 	// A pointer rather than an index because indices shift whenever
 	// someone leaves, and a stale index addresses the wrong seat.
 	Player *player.Player
+
+	nameMu sync.Mutex
+	name   string
 
 	notifyMu sync.Mutex
 	notify   func(any)
@@ -40,7 +42,7 @@ func newSession(id, name string, chips int, notify func(any)) *Session {
 
 	s := &Session{
 		ID:     id,
-		Name:   name,
+		name:   name,
 		Player: &p,
 		notify: notify,
 		outbox: make(chan any, outboxDepth),
@@ -84,6 +86,21 @@ func (s *Session) send(msg any) {
 		default:
 		}
 	}
+}
+
+// Name is what this player shows at the table. It is guarded because a
+// player can change it from their own goroutine while the table's is
+// reading it to announce a seat.
+func (s *Session) Name() string {
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+	return s.name
+}
+
+func (s *Session) setName(name string) {
+	s.nameMu.Lock()
+	s.name = name
+	s.nameMu.Unlock()
 }
 
 // Send queues a message for this session. It never blocks: a client that

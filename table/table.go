@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"ssh_holdem/game"
 )
@@ -88,11 +90,16 @@ const (
 	opSit seatOpKind = iota
 	opStand
 	opRun
+	opRename
 )
 
 type seatOp struct {
 	kind    seatOpKind
 	session *Session
+
+	// name is set for opRename. The player's own copy of it belongs to
+	// the Run goroutine, like every other field on a seat.
+	name string
 
 	// fn is set for opRun: a closure the Run goroutine executes between
 	// hands. It exists so callers can read table state that only that
@@ -197,6 +204,71 @@ func (t *Table) Refresh(sessionID string) bool {
 	s.send(lobby)
 
 	return true
+}
+
+// MaxNameLength is how wide a name may be. The seat column is fixed, and
+// a name that overflows it pushes every other player's chips out of line.
+const MaxNameLength = 12
+
+// CleanName is the house rule on names: trimmed, printable, and short
+// enough to fit a seat.
+//
+// Stripping non-printable runes is not tidiness. A name is written into
+// every other player's terminal, so an escape sequence in one would let
+// a player scribble on everyone else's screen.
+func CleanName(name string) (string, error) {
+	var b strings.Builder
+
+	for _, r := range name {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+
+	cleaned := strings.TrimSpace(b.String())
+	if cleaned == "" {
+		return "", errors.New("a name cannot be empty")
+	}
+
+	if runes := []rune(cleaned); len(runes) > MaxNameLength {
+		cleaned = string(runes[:MaxNameLength])
+	}
+
+	return cleaned, nil
+}
+
+// Rename changes the name this player shows at the table.
+func (t *Table) Rename(sessionID, name string) (string, error) {
+	cleaned, err := CleanName(name)
+	if err != nil {
+		return "", err
+	}
+
+	t.mu.Lock()
+	s, ok := t.sessions[sessionID]
+	if !ok {
+		t.mu.Unlock()
+		return "", errSessionGone
+	}
+
+	for id, other := range t.sessions {
+		if id != sessionID && strings.EqualFold(other.Name(), cleaned) {
+			t.mu.Unlock()
+			return "", fmt.Errorf("%q is already taken", cleaned)
+		}
+	}
+
+	s.setName(cleaned)
+	// The lock has to go before the queue: applySeatOps takes t.mu to
+	// republish, so holding it across a send on a full seatOps would
+	// leave the Run goroutine unable to drain the channel it is blocked
+	// behind.
+	t.mu.Unlock()
+
+	t.seatOps <- seatOp{kind: opRename, session: s, name: cleaned}
+	t.signal()
+
+	return cleaned, nil
 }
 
 // Sit asks for a seat at the next hand. A player who is already seated,
@@ -459,11 +531,17 @@ func (t *Table) applySeatOps() {
 					continue
 				}
 				t.broadcastInfo(fmt.Sprintf("%s sits down with %d.",
-					op.session.Name, op.session.Player.Chips))
+					op.session.Name(), op.session.Player.Chips))
 				changed = true
 
 			case opRun:
 				op.fn()
+
+			case opRename:
+				op.session.Player.Name = op.name
+				// Everyone else's seat list is showing the old name
+				// until this is republished.
+				changed = true
 
 			case opStand:
 				// Bank the stack before the seat goes, so a player who
@@ -471,7 +549,7 @@ func (t *Table) applySeatOps() {
 				// fresh buy-in.
 				t.banked[op.session.ID] = op.session.Player.Chips
 				if t.game.RemovePlayer(op.session.Player) {
-					t.broadcastInfo(fmt.Sprintf("%s leaves the table.", op.session.Name))
+					t.broadcastInfo(fmt.Sprintf("%s leaves the table.", op.session.Name()))
 					changed = true
 				}
 			}

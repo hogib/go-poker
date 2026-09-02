@@ -586,3 +586,78 @@ func (blockingSource) RequestAction(ctx context.Context, _ PlayerView) (Decision
 	<-ctx.Done()
 	return Decision{}, ctx.Err()
 }
+
+// The clock belongs to the table, so every seat can see it tick down --
+// not just the one on it. Without that nobody else can draw a progress
+// bar for the player they are waiting on.
+func TestEveryoneSeesTheActingClock(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	g.TurnTimeout = time.Minute
+
+	seat(g, "Alice", 1000)
+	seat(g, "Bob", 1000)
+	seat(g, "Charlie", 1000)
+
+	var watcherView, spectatorView PlayerView
+	var actingSeat int
+
+	g.Sources[0] = sourceFunc(func(v PlayerView) Decision {
+		// Look at the table from another seat while this one is on the
+		// clock.
+		actingSeat = v.Seat
+		watcherView = g.ViewFor(1)
+		spectatorView = g.ViewFor(SpectatorSeat)
+		return Decision{Action: Fold}
+	})
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+	if err := g.ExecuteBettingRound(g.firstToAct(Preflop)); err != nil {
+		t.Fatalf("ExecuteBettingRound: %v", err)
+	}
+
+	if watcherView.Acting != actingSeat {
+		t.Errorf("the watcher should see seat %d on the clock, got %d",
+			actingSeat, watcherView.Acting)
+	}
+	if watcherView.Deadline.IsZero() {
+		t.Error("the watcher cannot draw a clock without a deadline")
+	}
+	if watcherView.TurnLength != time.Minute {
+		t.Errorf("the watcher needs the full turn length to scale a bar, got %v",
+			watcherView.TurnLength)
+	}
+	if spectatorView.Deadline.IsZero() {
+		t.Error("a spectator should see the clock too")
+	}
+}
+
+// Once nobody is on the clock the deadline has to clear, or the bar
+// would keep showing a stale countdown between hands.
+func TestTheClockClearsWhenNobodyIsActing(t *testing.T) {
+	gv := NewGame(10, 20)
+	g := &gv
+	g.TurnTimeout = time.Minute
+
+	seat(g, "Alice", 1000)
+	seat(g, "Bob", 1000)
+
+	if err := g.StartNewHand(); err != nil {
+		t.Fatalf("StartNewHand: %v", err)
+	}
+	if err := g.ExecuteBettingRound(g.firstToAct(Preflop)); err != nil {
+		t.Fatalf("ExecuteBettingRound: %v", err)
+	}
+
+	if g.ActingSeat != SpectatorSeat {
+		t.Errorf("no seat should be acting between rounds, got %d", g.ActingSeat)
+	}
+	if !g.ActingDeadline.IsZero() {
+		t.Error("the clock should stop when nobody is on it")
+	}
+	if view := g.ViewFor(0); !view.Deadline.IsZero() {
+		t.Error("a view taken between turns should carry no deadline")
+	}
+}

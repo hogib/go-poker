@@ -45,8 +45,10 @@ type Game struct {
 	Street      Street
 
 	// ActingSeat is whose decision the table is waiting on, or
-	// SpectatorSeat when no one is being asked.
-	ActingSeat int
+	// SpectatorSeat when no one is being asked. ActingDeadline is when
+	// their time runs out, zero when there is no clock running.
+	ActingSeat     int
+	ActingDeadline time.Time
 
 	// CurrentBet is the amount each player must have in for the street.
 	// MinRaise is the size of the last full raise, so the smallest legal
@@ -518,6 +520,8 @@ func (g *Game) ViewFor(seat int) PlayerView {
 
 	view := PlayerView{
 		Seat:       SpectatorSeat,
+		Deadline:   g.ActingDeadline,
+		TurnLength: g.TurnTimeout,
 		Board:      append([]deck.Card(nil), g.Board.Cards...),
 		Seats:      seats,
 		Street:     g.Street,
@@ -622,16 +626,20 @@ func (g *Game) resolveTurn(ctx context.Context, seat int) (bool, error) {
 	p := g.Players[seat]
 	view := g.ViewFor(seat)
 
+	// The clock is started before the source is asked, so every other
+	// seat can see whose decision the table is waiting on and how long
+	// they have left.
 	if g.TurnTimeout > 0 {
-		view.Deadline = time.Now().Add(g.TurnTimeout)
+		g.ActingDeadline = time.Now().Add(g.TurnTimeout)
+		view.Deadline = g.ActingDeadline
+		view.TurnLength = g.TurnTimeout
 	}
 
-	// The turn is announced before the source is asked, so every other
-	// seat can see whose decision the table is waiting on.
 	g.ActingSeat = seat
 	g.notifyChanged()
 	defer func() {
 		g.ActingSeat = SpectatorSeat
+		g.ActingDeadline = time.Time{}
 	}()
 
 	// One deadline covers the whole turn, retries included. That is what a

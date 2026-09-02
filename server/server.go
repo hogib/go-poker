@@ -129,7 +129,7 @@ func handler(t *table.Table) bm.ProgramHandler {
 		session, publish := join(t, sess)
 
 		styles := tui.NewStyles(newRenderer(sess))
-		model := tui.New(t, session.ID, session.Name, styles)
+		model := tui.New(t, session.ID, session.Name(), styles)
 
 		opts := append([]tea.ProgramOption{tea.WithAltScreen()}, bm.MakeOptions(sess)...)
 		program := tea.NewProgram(model, opts...)

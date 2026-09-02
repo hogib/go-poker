@@ -225,14 +225,14 @@ func TestTableSnapshotsStayRedacted(t *testing.T) {
 			if len(view.Hole) == 0 {
 				continue
 			}
-			if view.Seats[view.Seat].Name != want.Name {
+			if view.Seats[view.Seat].Name != want.Name() {
 				t.Errorf("%s's view is anchored to seat %q", name, view.Seats[view.Seat].Name)
 			}
 			for _, seat := range view.Seats {
-				if seat.Name == other.Name {
+				if seat.Name == other.Name() {
 					// The only thing carried about another seat is public
 					// state; there is no field that could hold their cards.
-					if seat.Name == want.Name {
+					if seat.Name == want.Name() {
 						t.Errorf("%s appears twice in the seat list", name)
 					}
 				}

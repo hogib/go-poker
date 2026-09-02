@@ -2,17 +2,61 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"ssh_holdem/deck"
 	"ssh_holdem/game"
+	"ssh_holdem/table"
 )
+
+// Layout margins. The app pads by two columns each side, and a panel
+// spends two more on its border and six on its own padding.
+const (
+	appPadding   = 2
+	panelChrome  = 8
+	minPanelBody = 20
+)
+
+// inner is how wide the contents of a panel may be on this terminal.
+func (m Model) inner() int {
+	width := m.width - appPadding*2 - panelChrome
+	if width < minPanelBody {
+		return minPanelBody
+	}
+	if width > 64 {
+		return 64
+	}
+	return width
+}
+
+// compact reports whether the terminal is too narrow for the full
+// layout. Below this the tagline, the clock bars and the felt's spacing
+// all have to give way.
+func (m Model) compact() bool { return m.width < 60 }
+
+// logCapacity trims the hand log on a short terminal rather than letting
+// the felt scroll off the top.
+func (m Model) logCapacity() int {
+	spare := m.height - 18
+	switch {
+	case spare < 1:
+		return 0
+	case spare < logLines:
+		return spare
+	}
+	return logLines
+}
 
 func (m Model) View() string {
 	var body string
 
 	switch m.screen {
+	case screenName:
+		body = m.renderNamePrompt()
 	case screenMenu:
 		body = m.renderMenu()
 	case screenRules:
@@ -28,8 +72,41 @@ func (m Model) View() string {
 
 func (m Model) header() string {
 	logo := m.styles.Logo.Render("♠ ssh holdem ♥")
-	tag := m.styles.Tag.Render("  no-limit texas hold'em, over ssh")
-	return logo + tag + "\n"
+	if m.compact() {
+		return logo + "\n"
+	}
+	return logo + m.styles.Tag.Render("  no-limit texas hold'em, over ssh") + "\n"
+}
+
+// panel wraps content in the bordered box, sized to the terminal.
+func (m Model) panel(style lipgloss.Style, content string) string {
+	return style.Width(m.inner()).Render(content)
+}
+
+// ---- name ------------------------------------------------------------
+
+func (m Model) renderNamePrompt() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.Bright.Render("What should we call you?") + "\n\n")
+
+	typed := m.naming.typed
+	if typed == "" {
+		typed = " "
+	}
+
+	field := m.styles.Bright.Render(typed) + m.styles.MenuCursor.Render("▏")
+	b.WriteString("  " + field + "\n\n")
+
+	if m.naming.err != "" {
+		b.WriteString(m.styles.Urgent.Render("  "+m.naming.err) + "\n")
+	} else {
+		b.WriteString(m.styles.Dim.Render(fmt.Sprintf(
+			"  up to %d characters", table.MaxNameLength)) + "\n")
+	}
+
+	return m.panel(m.styles.Panel, b.String()) + "\n" +
+		m.hint("enter", "confirm", "esc", "keep current") + "\n"
 }
 
 // ---- lobby ----------------------------------------------------------
@@ -52,10 +129,10 @@ func (m Model) renderMenu() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n" + m.styles.Dim.Render(strings.Repeat("─", 26)) + "\n")
+	b.WriteString("\n" + m.styles.Dim.Render(strings.Repeat("─", m.inner()/2)) + "\n")
 	b.WriteString(m.styles.Dim.Render(m.tableSummary()))
 
-	panel := m.styles.Panel.Render(b.String())
+	panel := m.panel(m.styles.Panel, b.String())
 
 	footer := m.hint("↑↓", "move", "enter", "select", "q", "quit")
 	if m.status != "" {
@@ -72,6 +149,7 @@ func (m Model) tableSummary() string {
 
 	r := m.lobby.Rules
 	lines := []string{
+		fmt.Sprintf("playing as %s", m.name),
 		fmt.Sprintf("%d/%d blinds · %d buy-in", r.SmallBlind, r.BigBlind, r.BuyIn),
 		fmt.Sprintf("%s · %s watching", plural(m.lobby.Seated, "seated", "seated"),
 			plural(m.lobby.Watching, "player", "players")),
@@ -115,7 +193,7 @@ func (m Model) renderRules() string {
 		"Run out of chips and you can buy in again for the next hand.\n" +
 			"Let the shot clock expire and you check if you can, fold if you cannot."))
 
-	return m.styles.Panel.Render(b.String()) + "\n" +
+	return m.panel(m.styles.Panel, b.String()) + "\n" +
 		m.hint("esc", "back") + "\n"
 }
 
@@ -152,7 +230,7 @@ func (m Model) renderHelp() string {
 			"  Reconnect with the same SSH key and you keep your seat and stack.\n" +
 			"  Leaving your seat banks your chips; sitting back down returns them."))
 
-	return m.styles.Panel.Render(b.String()) + "\n" +
+	return m.panel(m.styles.Panel, b.String()) + "\n" +
 		m.hint("esc", "back") + "\n"
 }
 
@@ -160,7 +238,7 @@ func (m Model) renderHelp() string {
 
 func (m Model) renderTable() string {
 	if !m.hasView {
-		return m.styles.Felt.Render(m.styles.Dim.Render("Waiting for the table...")) +
+		return m.panel(m.styles.Felt, m.styles.Dim.Render("Waiting for the table...")) +
 			"\n" + m.hint("esc", "menu", "q", "quit") + "\n"
 	}
 
@@ -174,7 +252,7 @@ func (m Model) renderTable() string {
 		b.WriteString("\n" + m.renderHole())
 	}
 
-	felt := m.styles.Felt.Render(b.String())
+	felt := m.panel(m.styles.Felt, b.String())
 
 	var out strings.Builder
 	out.WriteString(felt + "\n")
@@ -199,12 +277,15 @@ func (m Model) renderSeats() string {
 			marker = m.styles.SeatTurn.Render("▸ ")
 		}
 
-		badge := "  "
+		// The blank has to be exactly as wide as the badge, or every
+		// row without the button sits a column to the left of the ones
+		// with it.
+		badge := "   "
 		if seat.IsButton {
 			badge = m.styles.Button.Render(" D ")
 		}
 
-		name := fmt.Sprintf("%-12s", truncate(seat.Name, 12))
+		name := pad(truncate(seat.Name, table.MaxNameLength), table.MaxNameLength)
 		chips := fmt.Sprintf("%7d", seat.Chips)
 
 		style := m.styles.Chips
@@ -228,10 +309,73 @@ func (m Model) renderSeats() string {
 			b.WriteString(m.styles.Dim.Render(fmt.Sprintf("   bets %d", seat.CurrentBet)))
 		}
 
+		// The clock hangs off whichever seat is on it, so everyone can
+		// see how long the player they are waiting on has left.
+		if seat.Index == m.view.Acting {
+			if bar := m.renderClock(); bar != "" {
+				b.WriteString("  " + bar)
+			}
+		}
+
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+// clockWidth is how many cells the bar gets, narrowing on a small
+// terminal and disappearing entirely when there is no room.
+func (m Model) clockWidth() int {
+	spare := m.inner() - 40
+	switch {
+	case spare < 6:
+		return 0
+	case spare < 12:
+		return spare
+	}
+	return 12
+}
+
+// renderClock draws the shot clock as a draining bar plus the seconds
+// left. It returns empty when no clock is running or the terminal is too
+// narrow to spare the columns.
+func (m Model) renderClock() string {
+	if m.view.Deadline.IsZero() || m.view.TurnLength <= 0 {
+		return ""
+	}
+
+	remaining := time.Until(m.view.Deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	fraction := float64(remaining) / float64(m.view.TurnLength)
+	fraction = math.Max(0, math.Min(1, fraction))
+
+	seconds := int(math.Ceil(remaining.Seconds()))
+
+	style := m.styles.Clock
+	switch {
+	case fraction <= 0.2:
+		style = m.styles.Urgent
+	case fraction <= 0.5:
+		style = m.styles.Pot
+	}
+
+	width := m.clockWidth()
+	if width == 0 {
+		return style.Render(fmt.Sprintf("%ds", seconds))
+	}
+
+	filled := int(math.Round(fraction * float64(width)))
+	if filled == 0 && remaining > 0 {
+		// Never show an empty bar while there is still time on it.
+		filled = 1
+	}
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+
+	return style.Render(bar) + m.styles.Dim.Render(fmt.Sprintf(" %ds", seconds))
 }
 
 func (m Model) renderBoard() string {
@@ -309,9 +453,17 @@ func (m Model) renderLog() string {
 		return ""
 	}
 
-	lines := make([]string, 0, len(m.log))
-	for _, line := range m.log {
-		lines = append(lines, m.styles.Log.Render("  "+line))
+	shown := m.log
+	if capacity := m.logCapacity(); capacity < len(shown) {
+		if capacity == 0 {
+			return ""
+		}
+		shown = shown[len(shown)-capacity:]
+	}
+
+	lines := make([]string, 0, len(shown))
+	for _, line := range shown {
+		lines = append(lines, m.styles.Log.Render("  "+truncate(line, m.inner())))
 	}
 
 	return strings.Join(lines, "\n") + "\n"
@@ -343,24 +495,72 @@ func (m Model) keyHints() string {
 	return m.hint(pairs...)
 }
 
-// hint renders alternating key/description pairs as a footer.
+// hint renders alternating key/description pairs as a footer, dropping
+// the ones that will not fit rather than wrapping. The pairs are listed
+// most useful first, so what survives on a narrow terminal is what a
+// player most needs.
 func (m Model) hint(pairs ...string) string {
-	parts := make([]string, 0, len(pairs)/2)
-	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts,
-			m.styles.KeyCap.Render(pairs[i])+" "+m.styles.Key.Render(pairs[i+1]))
+	const separator = "  ·  "
+
+	available := m.width - appPadding*2 - 2
+	if available < 6 {
+		available = 6
 	}
-	return "  " + strings.Join(parts, m.styles.Key.Render("  ·  "))
+
+	var (
+		out   strings.Builder
+		plain strings.Builder
+	)
+
+	for i := 0; i+1 < len(pairs); i += 2 {
+		piece := pairs[i] + " " + pairs[i+1]
+		if plain.Len() > 0 {
+			piece = separator + piece
+		}
+		if lipgloss.Width(plain.String()+piece) > available {
+			break
+		}
+
+		if out.Len() > 0 {
+			out.WriteString(m.styles.Key.Render(separator))
+		}
+		out.WriteString(m.styles.KeyCap.Render(pairs[i]) + " " +
+			m.styles.Key.Render(pairs[i+1]))
+		plain.WriteString(piece)
+	}
+
+	return "  " + out.String()
 }
 
+// truncate shortens to n display cells, not bytes. Names are typed by
+// players now, so an accented letter or an emoji would otherwise be
+// sliced mid-rune and throw every seat row out of line.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if n <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
 		return s
 	}
-	if n <= 1 {
-		return s[:n]
+
+	var b strings.Builder
+	for _, r := range s {
+		if lipgloss.Width(b.String()+string(r)) > n-1 {
+			break
+		}
+		b.WriteRune(r)
 	}
-	return s[:n-1] + "…"
+
+	return b.String() + "…"
+}
+
+// pad widens to n display cells. fmt's %-12s counts runes, which is a
+// different thing again for wide characters.
+func pad(s string, n int) string {
+	if gap := n - lipgloss.Width(s); gap > 0 {
+		return s + strings.Repeat(" ", gap)
+	}
+	return s
 }
 
 func describeResult(r game.HandResult, seats []game.SeatInfo) string {

@@ -18,12 +18,14 @@ type Controller interface {
 	Act(sessionID string, d game.Decision) bool
 	Sit(sessionID string) bool
 	Stand(sessionID string) bool
+	Rename(sessionID, name string) (string, error)
 }
 
 type screen int
 
 const (
-	screenMenu screen = iota
+	screenName screen = iota
+	screenMenu
 	screenTable
 	screenRules
 	screenHelp
@@ -42,8 +44,15 @@ type menuItem struct {
 // tickMsg drives the shot-clock countdown.
 type tickMsg time.Time
 
-func tick() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+// The clock bar needs redrawing several times a second to move at all,
+// but there is nothing to animate when no one is on the clock.
+const (
+	idleTick    = time.Second
+	runningTick = 200 * time.Millisecond
+)
+
+func tick(every time.Duration) tea.Cmd {
+	return tea.Tick(every, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 // Model is one player's view of the lobby and the table.
@@ -58,6 +67,10 @@ type Model struct {
 
 	screen screen
 	cursor int
+
+	// naming holds the name being typed. The screen is shown first, and
+	// again whenever the player picks "Change name".
+	naming nameInput
 
 	lobby    table.LobbyMsg
 	hasLobby bool
@@ -83,6 +96,11 @@ type raiseInput struct {
 	max    int
 }
 
+type nameInput struct {
+	typed string
+	err   string
+}
+
 // New builds the model for a session. Nothing is read from the table
 // here; every piece of state arrives as a message.
 func New(ctrl Controller, sessionID, name string, styles Styles) Model {
@@ -93,12 +111,21 @@ func New(ctrl Controller, sessionID, name string, styles Styles) Model {
 		styles:    styles,
 		width:     80,
 		height:    24,
-		screen:    screenMenu,
-		status:    "Connecting to the table...",
+		screen:    screenName,
+		naming:    nameInput{typed: name},
+		status:    "",
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tick() }
+func (m Model) Init() tea.Cmd { return tick(idleTick) }
+
+// tickRate slows right down when there is no clock to animate.
+func (m Model) tickRate() time.Duration {
+	if m.hasView && m.view.Acting != game.SpectatorSeat && !m.view.Deadline.IsZero() {
+		return runningTick
+	}
+	return idleTick
+}
 
 // menu is the lobby's items in order.
 func (m Model) menu() []menuItem {
@@ -146,6 +173,16 @@ func (m Model) menu() []menuItem {
 			},
 		},
 		{
+			id:      "name",
+			label:   func(m Model) string { return "Change your name" },
+			enabled: func(m Model) bool { return true },
+			action: func(m Model) (Model, tea.Cmd) {
+				m.naming = nameInput{typed: m.name}
+				m.screen = screenName
+				return m, nil
+			},
+		},
+		{
 			id:      "rules",
 			label:   func(m Model) string { return "Table rules" },
 			enabled: func(m Model) bool { return true },
@@ -182,14 +219,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tick()
+		return m, tick(m.tickRate())
 
 	case table.LobbyMsg:
 		m.lobby = msg
 		m.hasLobby = true
-		if m.status == "Connecting to the table..." {
-			m.status = ""
-		}
 		return m, nil
 
 	case table.StateMsg:
@@ -208,9 +242,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hasView = true
 		m.onClock = true
 		// Being put on the clock pulls you back to the felt: reading the
-		// rules is not worth losing a hand over.
+		// rules, or picking a new name, is not worth losing a hand over.
 		m.screen = screenTable
-		return m, nil
+		return m, tick(runningTick)
 
 	case table.ResultMsg:
 		result := msg.Result
@@ -237,6 +271,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.screen {
+	case screenName:
+		return m.handleNameKey(msg)
 	case screenMenu:
 		return m.handleMenuKey(msg)
 	case screenRules, screenHelp:
@@ -248,6 +284,64 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m.handleTableKey(msg)
 	}
+}
+
+// handleNameKey drives the name field. It is the first thing a player
+// sees, prefilled with their ssh username, so enter alone is enough.
+func (m Model) handleNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		// q is a letter here, not a command: people are called Quinn.
+		if len(m.naming.typed) < table.MaxNameLength {
+			m.naming.typed += "q"
+		}
+		return m, nil
+
+	case "esc":
+		// Backing out keeps the name you already have.
+		m.screen = screenMenu
+		return m, nil
+
+	case "backspace":
+		if runes := []rune(m.naming.typed); len(runes) > 0 {
+			m.naming.typed = string(runes[:len(runes)-1])
+			m.naming.err = ""
+		}
+		return m, nil
+
+	case "ctrl+u":
+		m.naming.typed = ""
+		m.naming.err = ""
+		return m, nil
+
+	case "enter":
+		name, err := m.ctrl.Rename(m.sessionID, m.naming.typed)
+		if err != nil {
+			m.naming.err = err.Error()
+			return m, nil
+		}
+		m.name = name
+		m.naming = nameInput{typed: name}
+		m.screen = screenMenu
+		m.status = fmt.Sprintf("Sitting in as %s.", name)
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes {
+		for _, r := range msg.Runes {
+			if len([]rune(m.naming.typed)) >= table.MaxNameLength {
+				break
+			}
+			m.naming.typed += string(r)
+		}
+		m.naming.err = ""
+		return m, nil
+	}
+	if msg.Type == tea.KeySpace && len([]rune(m.naming.typed)) < table.MaxNameLength {
+		m.naming.typed += " "
+	}
+
+	return m, nil
 }
 
 func (m Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
