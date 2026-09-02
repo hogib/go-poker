@@ -37,26 +37,55 @@ screen.
 
 ## Playing
 
-Up to nine players share one table. Hands deal automatically whenever at
-least two people are seated, and joining or leaving takes effect between
-hands.
+Connecting drops you in the lobby, not into a hand:
+
+```
+  ♠ ssh holdem ♥  no-limit texas hold'em, over ssh
+
+  ╭───────────────────────────────────╮
+  │                                   │
+  │     ▸ Take a seat                 │
+  │       Leave your seat             │
+  │       Watch the table             │
+  │       Table rules                 │
+  │       How to play                 │
+  │       Quit                        │
+  │                                   │
+  │   ──────────────────────────      │
+  │   10/20 blinds · 2000 buy-in      │
+  │   2 seated · 1 player watching    │
+  │                                   │
+  ╰───────────────────────────────────╯
+    ↑↓ move  ·  enter select  ·  q quit
+```
+
+`↑↓` moves, `enter` selects, and options that do not apply are greyed
+rather than hidden so the menu never reflows under the cursor. Up to nine
+players share one table; hands deal automatically whenever at least two are
+seated, and sitting down or standing up takes effect between hands.
+
+At the table:
 
 | Key | Action |
 | --- | --- |
 | `f` | fold |
 | `c` | check, or call the outstanding bet |
 | `r` | raise — type an amount, `enter` to confirm, `esc` to cancel |
-| `a` | all-in |
+| `a` | shove all in |
 | `r` | buy in again, when you have been knocked out |
+| `esc` | back to the menu |
 | `q` | quit |
 
-The seat the table is waiting on is marked with `<-`, and your remaining
-time on the shot clock counts down beside the prompt. Let it run out and you
-check if you can and fold if you cannot.
+The seat on the clock is marked `▸`, your own seat is highlighted, and your
+remaining time counts down beside the prompt, turning red under five
+seconds. Let it run out and you check if you can and fold if you cannot.
+Being put on the clock pulls you back to the felt from wherever you are, so
+nobody times out on a help screen.
 
 Disconnecting mid-hand folds you immediately rather than holding everyone
 else for the rest of the clock. Reconnect with the same SSH key and you get
-your stack back.
+your seat and your stack back. Standing up banks your chips the same way, so
+you can drop to the rail and sit back down with what you had.
 
 ## The dead button
 
@@ -91,8 +120,8 @@ it twice running, or pay the big blind twice, or skip it entirely.
 | `player` | one seat's stack and per-street/per-hand contributions |
 | `game` | the rules: blinds, betting rounds, streets, side pots, showdown |
 | `table` | one concurrent table; owns the game, fans snapshots out to sessions |
-| `tui` | the Bubble Tea model that draws a table for one player |
-| `server` | the SSH listener that turns a connection into a seated player |
+| `tui` | the Bubble Tea model that draws the lobby and the felt |
+| `server` | the SSH listener that turns a connection into a player |
 
 Three decisions shape the rest:
 
@@ -153,6 +182,23 @@ is pinned separately by a deterministic three-way test — a short stack
 all-in with a set takes the main pot and is locked out of the side pot above
 it.
 
-The table's tests are headless and run under the race detector: a hand
-played out by two sessions, snapshot redaction, disconnect, reconnect, chip
-banking, and acting out of turn.
+Every package has tests, and they all run clean under `-race`:
+
+| Package | What its tests cover |
+| --- | --- |
+| `deck` | hand ranking, tie-breaks, evaluator purity, best-five-of-seven |
+| `player` | betting, clamping to the stack, all-in, reset discipline |
+| `game` | blinds, betting rounds, side pots, showdown, the dead button, plus the fuzz gate |
+| `table` | concurrency, redaction, disconnect, reconnect, banking, the lobby |
+| `tui` | every key and screen, driven by feeding messages to the model |
+| `server` | identity, config, and real SSH connections end to end |
+
+The `tui` tests need no terminal: the model drives the table through a
+`Controller` interface, so a fake records what each keypress asked for and
+the tests assert on `View()` output. The `server` tests open a real
+listener, connect over SSH with a real key, request a PTY, and check that
+the lobby renders and that a keypress reaches the program.
+
+Fixes are checked against the behaviour they replaced. Reverting the chip
+banking, the dead button ring, the seat-eligibility rule or the refresh on
+publish each makes a specific test fail with a specific message.

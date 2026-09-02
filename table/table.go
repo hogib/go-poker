@@ -169,6 +169,36 @@ func (t *Table) Join(id, name string, notify func(any)) *Session {
 	return s
 }
 
+// Refresh re-sends a session everything it needs to draw itself.
+//
+// A client that has only just finished starting up will have missed what
+// Join pushed -- there was nowhere to deliver it yet -- and an idle table
+// broadcasts nothing until something changes, so without this the lobby
+// would sit on "connecting..." until the next hand.
+func (t *Table) Refresh(sessionID string) bool {
+	t.mu.Lock()
+	s, ok := t.sessions[sessionID]
+	if !ok {
+		t.mu.Unlock()
+		return false
+	}
+
+	view, hasView := t.lastView[sessionID]
+	public := t.lastPublic
+	lobby := t.lobbyLocked(s)
+	t.mu.Unlock()
+
+	switch {
+	case hasView:
+		s.send(StateMsg{View: view})
+	case len(public.Seats) > 0:
+		s.send(StateMsg{View: public})
+	}
+	s.send(lobby)
+
+	return true
+}
+
 // Sit asks for a seat at the next hand. A player who is already seated,
 // or who has no session, is ignored.
 func (t *Table) Sit(sessionID string) bool {
@@ -315,6 +345,28 @@ func (t *Table) do(fn func(), within time.Duration) bool {
 	case <-time.After(within):
 		return false
 	}
+}
+
+// Session returns the connected session with this id, or nil.
+func (t *Table) Session(id string) *Session { return t.session(id) }
+
+// SeatedCount is how many players are in seats, read from the cached
+// public snapshot so it is safe to ask from any goroutine.
+func (t *Table) SeatedCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.lastPublic.Seats)
+}
+
+// Watchers is how many sessions are connected but not seated.
+func (t *Table) Watchers() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if n := len(t.sessions) - len(t.lastPublic.Seats); n > 0 {
+		return n
+	}
+	return 0
 }
 
 func (t *Table) session(id string) *Session {

@@ -211,3 +211,117 @@ func TestLobbyCountsUpdateOnSeating(t *testing.T) {
 		return ok && lobby.YouAreSeated && lobby.YourChips == tbl.Config().BuyIn
 	})
 }
+
+// A client that finishes starting up after Join has already pushed must
+// still get its state. An idle table broadcasts nothing until something
+// changes, so without a way to ask, the lobby would sit blank until the
+// next hand.
+func TestRefreshResendsStateToALateClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	// Join with nowhere to deliver, exactly as a session does before its
+	// program exists.
+	tbl.Join("key-alice", "Alice", nil)
+
+	// The client comes up and attaches for real.
+	rec := &recorder{}
+	tbl.Session("key-alice").attach(rec.notify)
+
+	if _, ok := rec.lastLobby(); ok {
+		t.Fatal("the recorder should have missed everything sent before it attached")
+	}
+
+	if !tbl.Refresh("key-alice") {
+		t.Fatal("Refresh should be accepted for a connected session")
+	}
+
+	waitUntil(t, "the resent lobby state", 2*time.Second, func() bool {
+		_, ok := rec.lastLobby()
+		return ok
+	})
+
+	lobby, _ := rec.lastLobby()
+	if lobby.Rules.BigBlind != testConfig().BigBlind {
+		t.Errorf("the resent state should carry the house rules, got %+v", lobby.Rules)
+	}
+}
+
+func TestRefreshRejectsStrangers(t *testing.T) {
+	tbl := New(testConfig())
+
+	if tbl.Refresh("nobody") {
+		t.Error("Refresh should reject an unknown session")
+	}
+}
+
+// A seated player who reconnects should get their own view back, hole
+// cards and all, not the spectator one.
+func TestRefreshSendsTheSeatedViewWhenThereIsOne(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	alice, bob := &recorder{}, &recorder{}
+	joinAndSit(tbl, "key-alice", "Alice", alice)
+	joinAndSit(tbl, "key-bob", "Bob", bob)
+
+	go autoPlay(ctx, tbl, "key-alice", alice)
+	go autoPlay(ctx, tbl, "key-bob", bob)
+
+	waitUntil(t, "cards to be dealt", 10*time.Second, func() bool {
+		view, ok := alice.lastState()
+		return ok && len(view.Hole) == 2
+	})
+
+	late := &recorder{}
+	tbl.Session("key-alice").attach(late.notify)
+	tbl.Refresh("key-alice")
+
+	waitUntil(t, "the seated view", 5*time.Second, func() bool {
+		view, ok := late.lastState()
+		return ok && view.Seat != game.SpectatorSeat && len(view.Hole) == 2
+	})
+}
+
+// A disconnected player stops counting as a watcher. Getting this wrong
+// leaves the lobby advertising an audience that has gone home.
+func TestWatcherCountFollowsConnections(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tbl := New(testConfig())
+	go tbl.Run(ctx)
+
+	alice := &recorder{}
+	aliceSession := tbl.Join("key-alice", "Alice", alice.notify)
+	tbl.Join("key-bob", "Bob", (&recorder{}).notify)
+
+	if got := tbl.Watchers(); got != 2 {
+		t.Fatalf("expected two watchers, got %d", got)
+	}
+
+	tbl.Leave(aliceSession)
+
+	if got := tbl.Watchers(); got != 1 {
+		t.Errorf("a disconnected player should stop counting, got %d watchers", got)
+	}
+	if tbl.Session("key-alice") != nil {
+		t.Error("the disconnected session should be gone")
+	}
+
+	// Seated players are at the table, not watching it.
+	tbl.Sit("key-bob")
+	waitUntil(t, "the seat", 5*time.Second, func() bool {
+		return tbl.SeatedCount() == 1
+	})
+
+	if got := tbl.Watchers(); got != 0 {
+		t.Errorf("the only player is seated, so nobody is watching, got %d", got)
+	}
+}

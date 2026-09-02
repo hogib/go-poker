@@ -86,6 +86,10 @@ func (s *Session) send(msg any) {
 	}
 }
 
+// Send queues a message for this session. It never blocks: a client that
+// has stopped reading loses stale frames rather than holding the table.
+func (s *Session) Send(msg any) { s.send(msg) }
+
 // Done is closed when the session ends, so a blocked turn can give up
 // immediately instead of waiting out the clock.
 func (s *Session) Done() <-chan struct{} { return s.done }
@@ -119,6 +123,10 @@ type (
 		Text string
 	}
 )
+
+// Attach points the session at a new delivery function, which is how a
+// client takes over once it is ready to draw.
+func (s *Session) Attach(notify func(any)) { s.attach(notify) }
 
 // attach points the session at a new delivery function, which is how a
 // reconnect takes over an existing seat without disturbing a turn that is

@@ -62,24 +62,9 @@ func Serve(cfg Config) error {
 	go t.Run(ctx)
 
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
-
-	s, err := wish.NewServer(
-		wish.WithAddress(addr),
-		wish.WithHostKeyPath(cfg.HostKeyPath),
-		// Any key is welcome; the fingerprint is only used as a stable
-		// identity so a player keeps their seat across reconnects.
-		wish.WithPublicKeyAuth(func(ssh.Context, ssh.PublicKey) bool { return true }),
-		wish.WithMiddleware(
-			// Middleware is applied so that the last entry runs first, so
-			// this list reads inside-out: the app, then the PTY check,
-			// then logging around everything.
-			bm.MiddlewareWithProgramHandler(handler(t), termenv.ANSI256),
-			activeterm.Middleware(),
-			logging.Middleware(),
-		),
-	)
+	s, err := newServer(cfg, t)
 	if err != nil {
-		return fmt.Errorf("could not create the ssh server: %w", err)
+		return err
 	}
 
 	done := make(chan os.Signal, 1)
@@ -108,35 +93,45 @@ func Serve(cfg Config) error {
 	return nil
 }
 
+// newServer builds the listener. It is separate from Serve so a test can
+// drive a real server without also taking over signal handling.
+func newServer(cfg Config, t *table.Table) (*ssh.Server, error) {
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
+
+	s, err := wish.NewServer(
+		wish.WithAddress(addr),
+		wish.WithHostKeyPath(cfg.HostKeyPath),
+		// Any key is welcome; the fingerprint is only used as a stable
+		// identity so a player keeps their seat across reconnects.
+		wish.WithPublicKeyAuth(func(ssh.Context, ssh.PublicKey) bool { return true }),
+		wish.WithMiddleware(
+			// Middleware is applied so that the last entry runs first, so
+			// this list reads inside-out: the app, then the PTY check,
+			// then logging around everything.
+			bm.MiddlewareWithProgramHandler(handler(t), termenv.ANSI256),
+			activeterm.Middleware(),
+			logging.Middleware(),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("could not create the ssh server: %w", err)
+	}
+
+	return s, nil
+}
+
 // handler turns one SSH session into a running Bubble Tea program joined
 // to the table.
 func handler(t *table.Table) bm.ProgramHandler {
 	return func(sess ssh.Session) *tea.Program {
-		id := identify(sess)
-		name := displayName(sess)
+		session, publish := join(t, sess)
 
 		styles := tui.NewStyles(bm.MakeRenderer(sess))
-
-		// The table needs a delivery function at join time, but the
-		// program cannot be built until Join hands back the session. The
-		// closure reads through an atomic holder because the table's
-		// delivery goroutine and this one would otherwise race on it.
-		// Messages arriving before the program is stored are dropped,
-		// which is harmless: the table re-sends the current state as soon
-		// as anything changes.
-		var holder atomic.Pointer[tea.Program]
-
-		session := t.Join(id, name, func(msg any) {
-			if p := holder.Load(); p != nil {
-				p.Send(msg)
-			}
-		})
-
-		model := tui.New(t, session, styles)
+		model := tui.New(t, session.ID, session.Name, styles)
 
 		opts := append([]tea.ProgramOption{tea.WithAltScreen()}, bm.MakeOptions(sess)...)
 		program := tea.NewProgram(model, opts...)
-		holder.Store(program)
+		publish(program)
 
 		// Leaving is what releases the seat and unblocks any turn this
 		// player is holding, so it must happen however the program ends.
@@ -147,6 +142,36 @@ func handler(t *table.Table) bm.ProgramHandler {
 
 		return program
 	}
+}
+
+// join connects a session to the table and returns the function that
+// starts delivery once the program exists.
+//
+// The table needs somewhere to push messages at join time, but the
+// program cannot be built until Join hands back the session. The closure
+// reads through an atomic holder because the table's delivery goroutine
+// and this one would otherwise race on it.
+//
+// Anything the table pushes before the program is published has nowhere
+// to go, so publishing is also when the session asks for its state
+// again. An idle table broadcasts nothing until something changes, so a
+// client that did not ask would sit on an empty lobby until the next
+// hand.
+func join(t *table.Table, sess ssh.Session) (*table.Session, func(*tea.Program)) {
+	var holder atomic.Pointer[tea.Program]
+
+	session := t.Join(identify(sess), displayName(sess), func(msg any) {
+		if p := holder.Load(); p != nil {
+			p.Send(msg)
+		}
+	})
+
+	publish := func(p *tea.Program) {
+		holder.Store(p)
+		t.Refresh(session.ID)
+	}
+
+	return session, publish
 }
 
 // identify returns a stable id for the connecting client. The public key
