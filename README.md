@@ -112,16 +112,16 @@ the oval falls back to on its own.
 
 At the table:
 
-| Key | Action |
-| --- | --- |
-| `f` | fold |
-| `c` | check, or call the outstanding bet |
-| `r` | raise — type an amount, `enter` to confirm, `esc` to cancel |
-| `a` | shove all in |
-| `r` | buy in again, when you have been knocked out |
-| `v` | switch between the table and the compact list |
-| `esc` | back to the menu |
-| `q` | quit |
+| Key   | Action                                                      |
+| ----- | ----------------------------------------------------------- |
+| `f`   | fold                                                        |
+| `c`   | check, or call the outstanding bet                          |
+| `r`   | raise — type an amount, `enter` to confirm, `esc` to cancel |
+| `a`   | shove all in                                                |
+| `r`   | buy in again, when you have been knocked out                |
+| `v`   | switch between the table and the compact list               |
+| `esc` | back to the menu                                            |
+| `q`   | quit                                                        |
 
 Your remaining time counts down beside the prompt as well, turning red under
 five seconds. Let it run out and you check if you can and fold if you
@@ -171,14 +171,14 @@ it twice running, or pay the big blind twice, or skip it entirely.
                          └────────────────────┘ snapshots
 ```
 
-| Package | What it does |
-| --- | --- |
-| `deck` | cards, shuffling, dealing, and a bit-packed five-card evaluator |
-| `player` | one seat's stack and per-street/per-hand contributions |
-| `game` | the rules: blinds, betting rounds, streets, side pots, showdown |
-| `table` | one concurrent table; owns the game, fans snapshots out to sessions |
-| `tui` | the Bubble Tea model that draws the lobby, the table and the felt |
-| `server` | the SSH listener that turns a connection into a player |
+| Package  | What it does                                                        |
+| -------- | ------------------------------------------------------------------- |
+| `deck`   | cards, shuffling, dealing, and a bit-packed five-card evaluator     |
+| `player` | one seat's stack and per-street/per-hand contributions              |
+| `game`   | the rules: blinds, betting rounds, streets, side pots, showdown     |
+| `table`  | one concurrent table; owns the game, fans snapshots out to sessions |
+| `tui`    | the Bubble Tea model that draws the lobby, the table and the felt   |
+| `server` | the SSH listener that turns a connection into a player              |
 
 Three decisions shape the rest:
 
@@ -241,14 +241,14 @@ it.
 
 Every package has tests, and they all run clean under `-race`:
 
-| Package | What its tests cover |
-| --- | --- |
-| `deck` | all nine hand categories ranked against each other, tie-breaks, evaluator purity, best-five-of-seven, dealing and burns |
-| `player` | betting, clamping to the stack, all-in, reset discipline |
-| `game` | blinds, betting rounds, side pots, showdown, the dead button, plus the fuzz gate |
-| `table` | concurrency, redaction, disconnect, reconnect, banking, the lobby |
-| `tui` | every key and screen, the oval layout at every table and terminal size |
-| `server` | identity, config, and real SSH connections end to end |
+| Package  | What its tests cover                                                                                                    |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `deck`   | all nine hand categories ranked against each other, tie-breaks, evaluator purity, best-five-of-seven, dealing and burns |
+| `player` | betting, clamping to the stack, all-in, reset discipline                                                                |
+| `game`   | blinds, betting rounds, side pots, showdown, the dead button, plus the fuzz gate                                        |
+| `table`  | concurrency, redaction, disconnect, reconnect, banking, the lobby                                                       |
+| `tui`    | every key and screen, the oval layout at every table and terminal size                                                  |
+| `server` | identity, config, and real SSH connections end to end                                                                   |
 
 The `tui` tests need no terminal: the model drives the table through a
 `Controller` interface, so a fake records what each keypress asked for and
@@ -264,3 +264,7 @@ Several of the bugs these tests pin were found by running the thing rather
 than by reasoning about it — reconnects handing out a fresh buy-in, a lobby
 stuck on "connecting...", and keystrokes typed during connection setup being
 swallowed. Each has a test now, but none of them had one first.
+
+## Special Thanks
+
+This project was made possible by the generous contributions of Mr Ali Tortop.
